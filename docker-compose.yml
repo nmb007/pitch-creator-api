@@ -1,0 +1,95 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pitch
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pitch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      target: runtime
+    command: >
+      sh -c "alembic upgrade head &&
+             python -m src.seed &&
+             fastapi run --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./storage:/app/storage
+      - ./pyproject.toml:/app/pyproject.toml
+      - ./uv.lock:/app/uv.lock
+      - model-cache:/root/.cache
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      target: runtime
+    command: >
+      watchfiles --filter python
+      "celery -A src.worker.celery_app worker --concurrency=1 --loglevel=INFO"
+      ./src
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+      - ./storage:/app/storage
+      - model-cache:/root/.cache
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src:/app/src
+      - ./tests:/app/tests
+      - ./migrations:/app/migrations
+      - ./alembic.ini:/app/alembic.ini
+
+volumes:
+  pgdata:
+  model-cache:
