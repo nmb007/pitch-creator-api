@@ -16,7 +16,6 @@ class Settings(BaseSettings):
     GROQ_MODEL: str
     GROQ_BASE_URL: str
     OPENAI_API_KEY: str
-    OPENAI_MODEL: str
     OPENAI_BASE_URL: str
     LANGSMITH_API_KEY: str
     LANGSMITH_PROJECT: str
@@ -29,7 +28,7 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int
     # Structure ingest LLM: groq | openai | local
     STRUCTURE_LLM_PROVIDER: str
-    # Optional override; empty uses GROQ_MODEL / OPENAI_MODEL / local GGUF file.
+    # Empty uses GROQ_MODEL or the local GGUF file. Required when the provider is openai.
     STRUCTURE_LLM_MODEL: str
     # OpenAI-compat thinking control for Ollama/Qwen (e.g. low, none). Empty omits the field.
     STRUCTURE_LLM_REASONING_EFFORT: str

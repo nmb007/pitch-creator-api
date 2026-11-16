@@ -49,7 +49,7 @@ def model_name_for(role: Role = "default") -> str:
     if role == "structure" and settings.STRUCTURE_LLM_MODEL.strip():
         return settings.STRUCTURE_LLM_MODEL.strip()
     if provider == "openai":
-        return settings.OPENAI_MODEL
+        raise RuntimeError("STRUCTURE_LLM_MODEL is required for provider=openai")
     if provider == "local":
         return settings.STRUCTURE_MODEL_FILE
     return settings.GROQ_MODEL
