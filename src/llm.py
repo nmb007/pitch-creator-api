@@ -134,14 +134,53 @@ def _complete_json_langchain(
     model = get_chat_model(role)
     # json_mode works on Groq and other OpenAI-compatible APIs.
     structured = model.with_structured_output(schema, method="json_mode")
-    reply = structured.invoke(
-        [SystemMessage(content=system), HumanMessage(content=user)]
-    )
+    messages = [SystemMessage(content=system), HumanMessage(content=user)]
+    attempts = 3
+    for attempt in range(attempts):
+        try:
+            return _as_json_object(structured.invoke(messages))
+        except Exception as exc:
+            if attempt == attempts - 1 or not _retryable_json_error(exc):
+                raise
+            logger.warning(
+                "LLM complete_json role=%s %s; retrying (%s/2)",
+                role,
+                _json_error_reason(exc),
+                attempt + 1,
+            )
+    raise RuntimeError("LLM complete_json retries exhausted")
+
+
+def _retryable_json_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return "json_validate_failed" in text or "not a JSON object" in text
+
+
+def _json_error_reason(exc: BaseException) -> str:
+    if "json_validate_failed" in str(exc):
+        return "json_validate_failed"
+    return "reply was not a JSON object"
+
+
+def _as_json_object(reply: Any) -> dict[str, Any]:
     if isinstance(reply, dict):
         return reply
     if hasattr(reply, "model_dump"):
         return reply.model_dump()
+    logger.warning(
+        "LLM complete_json reply was not a JSON object type=%s reply=%s",
+        type(reply).__name__,
+        _reply_for_log(reply),
+    )
     raise ValueError("Structured LLM reply was not a JSON object")
+
+
+def _reply_for_log(reply: Any) -> str:
+    text = repr(reply)
+    limit = 2000
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated)"
 
 
 def _complete_json_local(

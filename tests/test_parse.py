@@ -7,9 +7,9 @@ from typing import Any
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from src.decks.blocks import read_pptx_blocks
+from src.decks.blocks import TextBlock, read_pptx_blocks
 from src.decks.parse import parse_pptx
-from src.decks.validate import build_raw_text
+from src.decks.validate import build_raw_text, titles_from_payload
 
 
 def test_period_ending_slide_continues_until_next_title(tmp_path) -> None:  # noqa: ANN001
@@ -167,6 +167,27 @@ def test_wrapped_title(tmp_path) -> None:  # noqa: ANN001
     assert drafts[0].title == "Enabling Brands With Real-Time Store-Level Insights"
     assert "Eileen set out" in drafts[0].raw_text
     assert "Arbisoft E-commerce" not in drafts[0].raw_text
+
+
+def test_non_adjacent_title_pair_splits_into_two_titles() -> None:
+    blocks = {
+        613: TextBlock(613, 63, "QA Collaboration with edX: A Decade of Innovation", "paragraph"),
+        614: TextBlock(614, 63, "The Challenge", "paragraph"),
+        626: TextBlock(626, 64, "Global Crew Accommodation Solutions Platform", "paragraph"),
+    }
+
+    _sections, titles, held = titles_from_payload(
+        {"sections": [], "titles": [{"block_numbers": [613, 626]}]},
+        blocks,
+        batch_numbers={613, 614, 626},
+    )
+
+    assert held is None
+    assert [item["title"] for item in titles] == [
+        "QA Collaboration with edX: A Decade of Innovation",
+        "Global Crew Accommodation Solutions Platform",
+    ]
+    assert [item["block_numbers"] for item in titles] == [[613], [626]]
 
 
 def test_wrapped_title_hold_across_slides(tmp_path, monkeypatch) -> None:  # noqa: ANN001

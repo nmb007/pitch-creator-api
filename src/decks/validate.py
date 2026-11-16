@@ -57,8 +57,8 @@ def titles_from_payload(
             allowed_numbers=allowed,
             batch_numbers=batch_numbers,
         )
-        if accepted is not None:
-            titles.append(accepted)
+        if accepted:
+            titles.extend(accepted)
             # A completed title ends a previous wrap hold; a new trailing
             # partial later in this loop may set held again.
             held = None
@@ -206,14 +206,14 @@ def _accept_title(
     *,
     allowed_numbers: set[int],
     batch_numbers: set[int],
-) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     numbers = _unique_ints(_int_list(item.get("block_numbers"), "block_numbers"))
     if not numbers:
         logger.warning("Skipping a title with no block_numbers")
-        return None, None
+        return [], None
     if len(numbers) > 2:
         logger.warning("Skipping title; expected 1 or 2 block_numbers, got %s", numbers)
-        return None, None
+        return [], None
     for number in numbers:
         if number not in blocks_by_number:
             raise StructureValidationError(
@@ -224,24 +224,50 @@ def _accept_title(
                 "Skipping title; block %s is outside the current window",
                 number,
             )
-            return None, None
+            return [], None
+    if len(numbers) == 2 and not _blocks_are_adjacent(numbers, blocks_by_number):
+        logger.warning("Splitting title; block_numbers %s are not adjacent", numbers)
+        return _split_title(numbers, blocks_by_number), None
     if any(_is_banner(blocks_by_number[n].text) for n in numbers):
         logger.warning("Skipping title; marked banner block(s) %s", numbers)
-        return None, None
-    if len(numbers) == 2 and not _blocks_are_adjacent(numbers, blocks_by_number):
-        logger.warning("Skipping title; block_numbers %s are not adjacent", numbers)
-        return None, None
+        return [], None
 
     incomplete = bool(item.get("incomplete"))
     # First line of a wrapped title; second line is on a later slide.
     if incomplete and len(numbers) == 1 and numbers[0] in batch_numbers:
-        return None, {"block_numbers": numbers, "incomplete": True}
+        return [], {"block_numbers": numbers, "incomplete": True}
 
+    title = _title_from_numbers(numbers, blocks_by_number)
+    if title is None:
+        return [], None
+    return [title], None
+
+
+def _split_title(
+    numbers: list[int],
+    blocks_by_number: dict[int, TextBlock],
+) -> list[dict[str, Any]]:
+    """Two non-adjacent blocks are two headlines, not one wrapped title."""
+    split: list[dict[str, Any]] = []
+    for number in numbers:
+        if _is_banner(blocks_by_number[number].text):
+            logger.warning("Skipping title; marked banner block(s) [%s]", number)
+            continue
+        title = _title_from_numbers([number], blocks_by_number)
+        if title is not None:
+            split.append(title)
+    return split
+
+
+def _title_from_numbers(
+    numbers: list[int],
+    blocks_by_number: dict[int, TextBlock],
+) -> dict[str, Any] | None:
     title = " ".join(blocks_by_number[n].text.strip() for n in numbers).strip()
     if not title:
         logger.warning("Skipping title; block(s) %s are empty", numbers)
-        return None, None
-    return {"title": title, "block_numbers": numbers}, None
+        return None
+    return {"title": title, "block_numbers": numbers}
 
 
 def _blocks_are_adjacent(

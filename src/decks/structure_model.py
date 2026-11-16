@@ -19,11 +19,13 @@ You mark case-study titles and section divider blocks in Arbisoft PowerPoint \
 blocks. Return only block numbers. Do not write title or section text.
 
 Title: the short name of one case study. Usually one headline block, or two \
-adjacent blocks when the name wraps onto a second line. Prefer lines that \
-name the work or the client in a headline style. If only the first line of a \
-wrapped title is in this batch, return that one block with incomplete true. \
-Otherwise omit incomplete or set it false. When several case studies share \
-one slide, emit one titles entry per case study.
+adjacent blocks when the name wraps onto a second line. Two numbers in one \
+block_numbers list are only those two next-to-each-other lines. Prefer lines \
+that name the work or the client in a headline style. If only the first line \
+of a wrapped title is in this batch, return that one block with incomplete \
+true. Otherwise omit incomplete or set it false. When several case studies \
+are in this batch, emit one titles entry per case study. Do not put two \
+separate headlines in one block_numbers list.
 
 Section: only a short category or divider name that labels the group of \
 studies that follow (for example "Cross platform App Case Studies" or \
@@ -51,6 +53,14 @@ Good reply:
 {"sections":[{"block_number":13}],"titles":[{"block_numbers":[10]}]}
 Bad reply (do not do this): putting block 11 or 12 in sections, or leaving \
 block 10 out of titles.
+
+Example. Two studies in one batch:
+20. slide=63 text=QA Collaboration with edX: A Decade of Innovation
+21. slide=63 text=The Challenge
+30. slide=64 text=Global Crew Accommodation Solutions Platform
+Good reply:
+{"sections":[],"titles":[{"block_numbers":[20]},{"block_numbers":[30]}]}
+Bad reply (do not do this): {"sections":[],"titles":[{"block_numbers":[20, 30]}]}
 
 Do not write study body fields. Do not say whether a study continues.
 Return JSON only, matching the required shape.
