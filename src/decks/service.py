@@ -138,7 +138,7 @@ def mark_failed(deck_id: UUID) -> None:
 
 
 def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft]) -> None:
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     pending: list[tuple[Study, StudyVersion, list[str], str]] = []
     embed_inputs: list[str] = []
     skipped = 0
@@ -146,15 +146,15 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
 
     ingest_info(deck.id, IngestPhase.PERSIST, f"saving studies. {len(drafts)} drafts.")
     for draft in drafts:
-        key = f"{draft.section}\n{draft.title}"
-        seen.add(key)
-        study = session.exec(select(Study).where(Study.match_key == key)).first()
+        seen.add((draft.section, draft.title))
+        study = session.exec(
+            select(Study).where(Study.section == draft.section, Study.title == draft.title)
+        ).first()
         if study is None:
             study = Study(
                 section=draft.section,
                 title=draft.title,
                 client_name=draft.client_name,
-                match_key=key,
                 status="active",
             )
             session.add(study)
@@ -237,7 +237,7 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
 
     hidden = 0
     for study in session.exec(select(Study).where(Study.status == "active")).all():
-        if study.match_key not in seen:
+        if (study.section, study.title) not in seen:
             study.status = "hidden"
             session.add(study)
             hidden += 1

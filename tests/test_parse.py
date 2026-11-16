@@ -317,9 +317,7 @@ def test_client_name_dropped_when_not_in_blocks(tmp_path) -> None:  # noqa: ANN0
         blocks = _blocks_from_message(message)
         return {
             "sections": [],
-            "titles": [
-                _title(blocks, "Expanding Access to Education for Global Social Impact")
-            ],
+            "titles": [_title(blocks, "Expanding Access to Education for Global Social Impact")],
         }
 
     drafts = parse_pptx(path, complete=complete)
@@ -377,9 +375,7 @@ def test_later_duplicate_title_overwrites(tmp_path, monkeypatch) -> None:  # noq
         blocks = _blocks_from_message(message)
         return {
             "sections": [],
-            "titles": [
-                _title(blocks, "Elevating KAYAK's Mobile Experience in Travel Tech")
-            ],
+            "titles": [_title(blocks, "Elevating KAYAK's Mobile Experience in Travel Tech")],
         }
 
     drafts = parse_pptx(path, complete=complete)

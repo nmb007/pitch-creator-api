@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Column, DateTime
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlalchemy.types import JSON
 from sqlmodel import Field
 
@@ -26,11 +26,11 @@ class DeckImport(UUIDModel, table=True):
 
 class Study(UUIDModel, TimestampModel, table=True):
     __tablename__ = "studies"
+    __table_args__ = (UniqueConstraint("section", "title", name="studies_section_title_key"),)
 
     section: str = Field(max_length=300)
     title: str = Field(max_length=500)
     client_name: str | None = Field(default=None, max_length=300)
-    match_key: str = Field(unique=True, max_length=800)
     status: str = Field(default="active", max_length=32)
 
 
