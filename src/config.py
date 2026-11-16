@@ -1,4 +1,4 @@
-"""Global application settings."""
+"""Global application settings. Values come from the environment / .env."""
 
 import os
 
@@ -8,22 +8,37 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    ENVIRONMENT: str = "local"
-    DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5433/pitch"
-    CELERY_BROKER_URL: str = "redis://localhost:6380/0"
-    STORAGE_DIR: str = "storage"
-    GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "openai/gpt-oss-120b"
-    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
-    LANGSMITH_API_KEY: str = ""
-    LANGSMITH_PROJECT: str = "pitch-creator"
-    SEED_USER_EMAIL: str = ""
-    SEED_USER_PASSWORD: str = ""
-    SEED_USER_NAME: str = "Demo User"
+    ENVIRONMENT: str
+    DATABASE_URL: str
+    CELERY_BROKER_URL: str
+    STORAGE_DIR: str
+    GROQ_API_KEY: str
+    GROQ_MODEL: str
+    GROQ_BASE_URL: str
+    OPENAI_API_KEY: str
+    OPENAI_MODEL: str
+    OPENAI_BASE_URL: str
+    LANGSMITH_API_KEY: str
+    LANGSMITH_PROJECT: str
+    SEED_USER_EMAIL: str
+    SEED_USER_PASSWORD: str
+    SEED_USER_NAME: str
     # Comma-separated browser origins. Empty means no cross-origin browser calls.
-    CORS_ALLOW_ORIGINS: str = "http://localhost:3000"
-    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
-    EMBEDDING_DIMENSIONS: int = 384
+    CORS_ALLOW_ORIGINS: str
+    EMBEDDING_MODEL: str
+    EMBEDDING_DIMENSIONS: int
+    # Structure ingest LLM: groq | openai | local
+    STRUCTURE_LLM_PROVIDER: str
+    # Optional override; empty uses GROQ_MODEL / OPENAI_MODEL / local GGUF file.
+    STRUCTURE_LLM_MODEL: str
+    # OpenAI-compat thinking control for Ollama/Qwen (e.g. low, none). Empty omits the field.
+    STRUCTURE_LLM_REASONING_EFFORT: str
+    # Completion cap for structure calls. 0 omits the field.
+    STRUCTURE_LLM_MAX_TOKENS: int
+    STRUCTURE_MODEL_REPO: str
+    STRUCTURE_MODEL_FILE: str
+    STRUCTURE_MODEL_THREADS: int
+    STRUCTURE_BATCH_SLIDES: int
 
 
 settings = Settings()

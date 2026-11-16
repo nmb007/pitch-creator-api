@@ -18,5 +18,6 @@ logger = logging.getLogger(__name__)
     max_retries=0,
 )
 def ingest_deck(deck_import_id: str) -> None:
-    logger.info("Starting deck import %s", deck_import_id)
+    logger.info("Ingest task started for deck import %s", deck_import_id)
     deck_service.run_import(UUID(deck_import_id))
+    logger.info("Ingest task finished for deck import %s", deck_import_id)

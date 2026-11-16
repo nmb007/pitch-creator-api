@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from src.config import settings
 from src.database import get_sync_session
-from src.decks.client_name import extract_client_name
+from src.decks.drafts import FIELD_NAMES, StudyDraft
 from src.decks.models import (
     BrandAsset,
     DeckImport,
@@ -20,14 +20,13 @@ from src.decks.models import (
     StudyImage,
     StudyVersion,
 )
-from src.decks.parse import FIELD_NAMES, StudyDraft, parse_pptx
+from src.decks.parse import parse_pptx
 from src.embeddings import embed_texts
 from src.exceptions import NotFoundError
 
 logger = logging.getLogger(__name__)
 
 SUMMARY_CHARS = 2000
-MAX_CHUNKS = 3
 
 
 def storage_root() -> Path:
@@ -102,17 +101,31 @@ def run_import(deck_id: UUID) -> None:
         deck.status = "running"
         session.add(deck)
         session.commit()
+        file_name = deck.file_name
     path = deck_path(deck_id)
+    logger.info("Import %s running for %s (%s)", deck_id, file_name, path)
     try:
+        logger.info("Import %s step 1/3: parse PowerPoint into study drafts", deck_id)
         drafts = parse_pptx(path)
+        logger.info(
+            "Import %s step 1/3 done: %s study draft(s) ready",
+            deck_id,
+            len(drafts),
+        )
         with get_sync_session() as session:
             deck = session.get(DeckImport, deck_id)
             if deck is None:
                 return
+            logger.info(
+                "Import %s step 2/3: persist drafts (versions, images, hide missing)",
+                deck_id,
+            )
             persist_drafts(session, deck, drafts)
+            logger.info("Import %s step 3/3: mark import completed", deck_id)
             deck.status = "completed"
             session.add(deck)
             session.commit()
+        logger.info("Import %s completed successfully", deck_id)
     except Exception:
         logger.exception("Deck import %s failed", deck_id)
         mark_failed(deck_id)
@@ -133,7 +146,14 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
     seen: set[str] = set()
     pending: list[tuple[Study, StudyVersion, list[str], str]] = []
     embed_inputs: list[str] = []
+    skipped = 0
+    changed = 0
 
+    logger.info(
+        "Persist: processing %s draft(s) for deck import %s",
+        len(drafts),
+        deck.id,
+    )
     for draft in drafts:
         key = f"{draft.section}\n{draft.title}"
         seen.add(key)
@@ -161,11 +181,11 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
             )
         ).first()
         if current is not None and current.content_hash == digest:
+            skipped += 1
             continue
-        if settings.GROQ_API_KEY:
-            study.client_name = extract_client_name(draft.title, draft.raw_text)
-            draft.client_name = study.client_name
-            session.add(study)
+        changed += 1
+        study.client_name = draft.client_name
+        session.add(study)
         if current is not None:
             current.is_current = False
             session.add(current)
@@ -193,7 +213,17 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
         embed_inputs.append(summary)
         embed_inputs.extend(chunks)
 
+    logger.info(
+        "Persist: %s unchanged (hash skip), %s new/changed version(s)",
+        skipped,
+        changed,
+    )
     if embed_inputs:
+        logger.info(
+            "Persist: embedding %s text(s) for %s version(s)",
+            len(embed_inputs),
+            len(pending),
+        )
         vectors = embed_texts(embed_inputs)
         cursor = 0
         for _study, version, chunks, _summary in pending:
@@ -210,11 +240,18 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
                     )
                 )
                 cursor += 1
+        logger.info("Persist: embeddings written")
+    else:
+        logger.info("Persist: no embeddings needed")
 
+    hidden = 0
     for study in session.exec(select(Study).where(Study.status == "active")).all():
         if study.match_key not in seen:
             study.status = "hidden"
             session.add(study)
+            hidden += 1
+    if hidden:
+        logger.info("Persist: hid %s study(ies) missing from this file", hidden)
 
 
 def ensure_brand_asset() -> None:
@@ -260,9 +297,6 @@ def _chunks(draft: StudyDraft) -> list[str]:
     parts = [getattr(draft, name) for name in FIELD_NAMES if getattr(draft, name)]
     if not parts:
         parts = [draft.raw_text] if draft.raw_text else ["Untitled study"]
-    while len(parts) > MAX_CHUNKS:
-        parts[-2] = f"{parts[-2]}\n{parts[-1]}"
-        parts.pop()
     return parts
 
 

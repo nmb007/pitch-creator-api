@@ -3,8 +3,8 @@
 from sqlmodel import select
 from src.auth.models import User
 from src.decks import service as deck_service
+from src.decks.drafts import StudyDraft
 from src.decks.models import DeckImport, Study
-from src.decks.parse import StudyDraft
 
 
 def test_hidden_studies_are_excluded(monkeypatch) -> None:  # noqa: ANN001

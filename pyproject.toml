@@ -26,6 +26,9 @@ dependencies = [
     "langgraph-checkpoint-postgres",
     "fastembed",
     "watchfiles",
+    "llama-cpp-python>=0.3.36",
+    "huggingface-hub>=1.33.0",
+    "docling-slim[format-pptx]>=2.150.0",
 ]
 
 [dependency-groups]
