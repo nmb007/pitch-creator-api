@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from src.decks.drafts import ImageDraft
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -35,13 +33,12 @@ class SlideBlocks:
         return hashlib.sha256(body.encode()).hexdigest()
 
 
-def read_pptx_blocks(path: Path) -> list[SlideBlocks]:
+def read_pptx_blocks(path: Path, *, deck_id: UUID | None = None) -> list[SlideBlocks]:
     """Return body-layer text blocks per slide, plus pictures from python-pptx."""
     from docling.datamodel.base_models import InputFormat
     from docling.document_converter import DocumentConverter
     from docling_core.types.doc import ContentLayer
 
-    logger.info("Docling: converting %s", path)
     converter = DocumentConverter(allowed_formats=[InputFormat.PPTX])
     document = converter.convert(str(path)).document
     by_slide: dict[int, list[TextBlock]] = {}
@@ -65,7 +62,6 @@ def read_pptx_blocks(path: Path) -> list[SlideBlocks]:
         by_slide.setdefault(block.slide, []).append(block)
         next_number += 1
 
-    logger.info("Docling: collecting pictures by slide")
     images_by_slide = _images_by_slide(path)
     slide_numbers = sorted(set(by_slide) | set(images_by_slide))
     slides = [
@@ -78,12 +74,15 @@ def read_pptx_blocks(path: Path) -> list[SlideBlocks]:
     ]
     block_count = sum(len(slide.blocks) for slide in slides)
     image_count = sum(len(slide.images) for slide in slides)
-    logger.info(
-        "Docling: ready with %s slide(s), %s text block(s), %s image(s)",
-        len(slides),
-        block_count,
-        image_count,
-    )
+    if deck_id is not None:
+        from src.decks.ingest_log import IngestPhase, ingest_info
+
+        ingest_info(
+            deck_id,
+            IngestPhase.READ,
+            f"finished reading. {len(slides)} slides, {block_count} text blocks, "
+            f"{image_count} images.",
+        )
     return slides
 
 

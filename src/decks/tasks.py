@@ -8,6 +8,7 @@ from uuid import UUID
 from celery import shared_task
 
 from src.decks import service as deck_service
+from src.decks.ingest_log import IngestPhase, ingest_info
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,6 @@ logger = logging.getLogger(__name__)
     max_retries=0,
 )
 def ingest_deck(deck_import_id: str) -> None:
-    logger.info("Ingest task started for deck import %s", deck_import_id)
-    deck_service.run_import(UUID(deck_import_id))
-    logger.info("Ingest task finished for deck import %s", deck_import_id)
+    deck_id = UUID(deck_import_id)
+    ingest_info(deck_id, IngestPhase.READ, "ingest task started.")
+    deck_service.run_import(deck_id)

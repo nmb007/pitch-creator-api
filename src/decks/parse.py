@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from src.config import settings
 from src.decks.blocks import SlideBlocks, TextBlock, read_pptx_blocks
 from src.decks.drafts import FIELD_NAMES, ImageDraft, StudyDraft
+from src.decks.ingest_log import (
+    IngestPhase,
+    block_phrase,
+    ingest_info,
+    slide_range,
+)
 from src.decks.structure_model import (
     build_field_message,
     build_title_message,
@@ -22,8 +28,6 @@ from src.decks.validate import (
     is_banner,
     titles_from_payload,
 )
-
-logger = logging.getLogger(__name__)
 
 StructureFn = Callable[[str], dict[str, Any]]
 
@@ -39,6 +43,7 @@ __all__ = [
 def parse_pptx(
     path: Path,
     *,
+    deck_id: UUID | None = None,
     complete: StructureFn | None = None,
     complete_fields: StructureFn | None = None,
 ) -> list[StudyDraft]:
@@ -48,10 +53,10 @@ def parse_pptx(
     per-study field call. When only ``complete`` is passed, it handles both
     message shapes (tests). Production uses the two GGUF helpers.
     """
-    logger.info("Parse: reading blocks from %s", path)
-    slides = read_pptx_blocks(path)
+    slides = read_pptx_blocks(path, deck_id=deck_id)
     if not slides:
-        logger.info("Parse: no slides found")
+        if deck_id is not None:
+            ingest_info(deck_id, IngestPhase.READ, "finished reading. No slides found.")
         return []
     blocks_by_number = {
         block.number: block for slide in slides for block in slide.blocks
@@ -64,28 +69,35 @@ def parse_pptx(
         field_runner = complete
     else:
         field_runner = structure_fields
-    logger.info(
-        "Parse: marking titles across %s slide(s) with batch size %s",
-        len(slides),
-        max(1, settings.STRUCTURE_BATCH_SLIDES),
+    batch_size = max(1, settings.STRUCTURE_BATCH_SLIDES)
+    if deck_id is not None:
+        ingest_info(
+            deck_id,
+            IngestPhase.TITLES,
+            f"marking titles. {len(slides)} slides, {batch_size} slides per call.",
+        )
+    anchors = _collect_title_anchors(
+        slides,
+        blocks_by_number,
+        title_runner,
+        log_id=deck_id,
     )
-    anchors = _collect_title_anchors(slides, blocks_by_number, title_runner)
-    logger.info("Parse: building %s study span(s)", len(anchors))
     drafts = _drafts_from_anchors(
         anchors,
         blocks_by_number,
         slides_by_number,
         field_runner,
+        log_id=deck_id,
     )
-    merged = _replace_same_key(drafts)
-    logger.info("Parse: done with %s draft(s)", len(merged))
-    return merged
+    return _replace_same_key(drafts, log_id=deck_id)
 
 
 def _collect_title_anchors(
     slides: list[SlideBlocks],
     blocks_by_number: dict[int, TextBlock],
     complete: StructureFn,
+    *,
+    log_id: UUID | str | None,
 ) -> list[dict[str, Any]]:
     anchors: list[dict[str, Any]] = []
     section_marks: list[tuple[int, str]] = []
@@ -93,7 +105,6 @@ def _collect_title_anchors(
     held: dict[str, Any] | None = None
     index = 0
     batch_size = max(1, settings.STRUCTURE_BATCH_SLIDES)
-    total_slides = len(slides)
     model_calls = 0
 
     while index < len(slides):
@@ -113,20 +124,20 @@ def _collect_title_anchors(
             continue
         batch_numbers = {number for number, _, _ in block_rows}
         slide_nos = [slide.number for slide in window]
-        logger.info(
-            "Parse: title call on slide(s) %s (through %s/%s)%s",
-            ",".join(str(n) for n in slide_nos),
-            min(index, total_slides),
-            total_slides,
-            " [wrap hold]" if held is not None else "",
-        )
+        model_calls += 1
+        wrap = " (completing a wrapped title)" if held is not None else ""
+        if log_id is not None:
+            ingest_info(
+                log_id,
+                IngestPhase.TITLES,
+                f"title call {model_calls}, slides {slide_range(slide_nos)}{wrap}.",
+            )
         message = build_title_message(
             section=section,
             blocks=block_rows,
             held_title=held,
         )
         payload = complete(message)
-        model_calls += 1
         held_extra = (
             {int(n) for n in held.get("block_numbers") or []}
             if held is not None
@@ -138,56 +149,75 @@ def _collect_title_anchors(
             batch_numbers=batch_numbers,
             allowed_extra=held_extra,
         )
+        if log_id is not None:
+            if titles:
+                ingest_info(
+                    log_id,
+                    IngestPhase.TITLES,
+                    f"Found {len(titles)} title{'s' if len(titles) != 1 else ''}.",
+                )
+            else:
+                ingest_info(log_id, IngestPhase.TITLES, "Found no titles.")
         for item in sections:
             section_marks.append((int(item["block_number"]), str(item["name"])))
             section = str(item["name"])
-            logger.info(
-                "Parse: section %r at block %s",
-                item["name"],
-                item["block_number"],
-            )
+            if log_id is not None:
+                ingest_info(
+                    log_id,
+                    IngestPhase.TITLES,
+                    f'found section "{item["name"]}" at block {item["block_number"]}.',
+                )
         for item in titles:
             title_start = min(int(n) for n in item["block_numbers"])
+            numbers = [int(n) for n in item["block_numbers"]]
             anchors.append(
                 {
                     "title": str(item["title"]),
-                    "block_numbers": [int(n) for n in item["block_numbers"]],
+                    "block_numbers": numbers,
                     "start": title_start,
                 }
             )
-            logger.info(
-                "Parse: title %r at block(s) %s",
-                item["title"],
-                item["block_numbers"],
-            )
-        if next_held is None and held is not None and not titles:
-            # Hold ended with neither a completed wrap nor another title.
-            logger.info(
-                "Parse: dropping unfinished wrapped title at block(s) %s",
-                held.get("block_numbers"),
+            if log_id is not None:
+                ingest_info(
+                    log_id,
+                    IngestPhase.TITLES,
+                    f'found title "{item["title"]}" at {block_phrase(numbers)}.',
+                )
+        if next_held is None and held is not None and not titles and log_id is not None:
+            ingest_info(
+                log_id,
+                IngestPhase.TITLES,
+                f"dropped an unfinished wrapped title at "
+                f"{block_phrase(list(held.get('block_numbers') or []))}.",
             )
         held = next_held
-        if held is not None:
-            logger.info(
-                "Parse: holding wrapped title at block(s) %s for the next slide",
-                held.get("block_numbers"),
+        if held is not None and log_id is not None:
+            ingest_info(
+                log_id,
+                IngestPhase.TITLES,
+                f"holding a wrapped title at "
+                f"{block_phrase(list(held.get('block_numbers') or []))} for the next slide.",
             )
 
-    if held is not None:
-        logger.info(
-            "Parse: dropping unfinished wrapped title at block(s) %s at end of deck",
-            held.get("block_numbers"),
+    if held is not None and log_id is not None:
+        ingest_info(
+            log_id,
+            IngestPhase.TITLES,
+            f"dropped an unfinished wrapped title at end of deck at "
+            f"{block_phrase(list(held.get('block_numbers') or []))}.",
         )
 
     anchors.sort(key=lambda item: item["start"])
     section_marks.sort(key=lambda item: item[0])
     for anchor in anchors:
         anchor["section"] = _section_for(anchor["start"], section_marks)
-    logger.info(
-        "Parse: title pass done with %s title(s) after %s call(s)",
-        len(anchors),
-        model_calls,
-    )
+    if log_id is not None:
+        ingest_info(
+            log_id,
+            IngestPhase.TITLES,
+            f"finished marking titles. {len(anchors)} case studies found from "
+            f"{model_calls} calls.",
+        )
     return anchors
 
 
@@ -205,9 +235,18 @@ def _drafts_from_anchors(
     blocks_by_number: dict[int, TextBlock],
     slides_by_number: dict[int, SlideBlocks],
     complete_fields: StructureFn,
+    *,
+    log_id: UUID | str | None,
 ) -> list[StudyDraft]:
     ordered = sorted(blocks_by_number)
     drafts: list[StudyDraft] = []
+    total = len(anchors)
+    if log_id is not None and total:
+        ingest_info(
+            log_id,
+            IngestPhase.FIELDS,
+            f"filling fields for {total} case studies.",
+        )
     for index, anchor in enumerate(anchors):
         start = int(anchor["start"])
         title_numbers = [int(n) for n in anchor["block_numbers"]]
@@ -221,16 +260,17 @@ def _drafts_from_anchors(
             if number not in title_numbers
             and not is_banner(blocks_by_number[number].text)
         ]
+        if log_id is not None:
+            ingest_info(
+                log_id,
+                IngestPhase.FIELDS,
+                f'field call {index + 1} of {total}, "{anchor["title"]}".',
+            )
         message = build_field_message(
             section=str(anchor["section"]),
             title=str(anchor["title"]),
             title_block_numbers=title_numbers,
             body_blocks=body_blocks,
-        )
-        logger.info(
-            "Parse: field call for %r (%s body block(s))",
-            anchor["title"],
-            len(body_blocks),
         )
         payload = complete_fields(message)
         draft = apply_fields_payload(
@@ -243,11 +283,11 @@ def _drafts_from_anchors(
             slides_by_number=slides_by_number,
         )
         drafts.append(draft)
-        logger.info(
-            "Parse: finished study %r (section=%s, slides=%s)",
-            draft.title,
-            draft.section,
-            draft.slide_numbers,
+    if log_id is not None:
+        ingest_info(
+            log_id,
+            IngestPhase.FIELDS,
+            f"finished filling fields for {len(drafts)} case studies.",
         )
     return drafts
 
@@ -268,7 +308,11 @@ def _span_block_numbers(
     return ordered[begin:end]
 
 
-def _replace_same_key(drafts: list[StudyDraft]) -> list[StudyDraft]:
+def _replace_same_key(
+    drafts: list[StudyDraft],
+    *,
+    log_id: UUID | str | None,
+) -> list[StudyDraft]:
     """Keep one draft per section+title. A later copy replaces the earlier one."""
     merged: dict[str, StudyDraft] = {}
     order: list[str] = []
@@ -276,11 +320,12 @@ def _replace_same_key(drafts: list[StudyDraft]) -> list[StudyDraft]:
         key = f"{draft.section}\n{draft.title}"
         if key not in merged:
             order.append(key)
-        else:
-            logger.info(
-                "Parse: replacing earlier study %r (section=%s) with a later copy",
-                draft.title,
-                draft.section,
+        elif log_id is not None:
+            ingest_info(
+                log_id,
+                IngestPhase.FIELDS,
+                f'replaced an earlier copy of "{draft.title}" with a later one '
+                f'in section "{draft.section}".',
             )
         merged[key] = draft
     return [merged[key] for key in order]

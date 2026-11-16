@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from src.config import settings
 from src.database import get_sync_session
 from src.decks.drafts import FIELD_NAMES, StudyDraft
+from src.decks.ingest_log import IngestPhase, ingest_info
 from src.decks.models import (
     BrandAsset,
     DeckImport,
@@ -103,31 +104,25 @@ def run_import(deck_id: UUID) -> None:
         session.commit()
         file_name = deck.file_name
     path = deck_path(deck_id)
-    logger.info("Import %s running for %s (%s)", deck_id, file_name, path)
     try:
-        logger.info("Import %s step 1/3: parse PowerPoint into study drafts", deck_id)
-        drafts = parse_pptx(path)
-        logger.info(
-            "Import %s step 1/3 done: %s study draft(s) ready",
-            deck_id,
-            len(drafts),
-        )
+        ingest_info(deck_id, IngestPhase.READ, f"reading {file_name}.")
+        drafts = parse_pptx(path, deck_id=deck_id)
         with get_sync_session() as session:
             deck = session.get(DeckImport, deck_id)
             if deck is None:
                 return
-            logger.info(
-                "Import %s step 2/3: persist drafts (versions, images, hide missing)",
-                deck_id,
-            )
             persist_drafts(session, deck, drafts)
-            logger.info("Import %s step 3/3: mark import completed", deck_id)
             deck.status = "completed"
             session.add(deck)
             session.commit()
-        logger.info("Import %s completed successfully", deck_id)
+        ingest_info(
+            deck_id,
+            IngestPhase.DONE,
+            f"import completed. {len(drafts)} studies saved.",
+        )
     except Exception:
         logger.exception("Deck import %s failed", deck_id)
+        ingest_info(deck_id, IngestPhase.FAILED, "import failed.")
         mark_failed(deck_id)
         raise
 
@@ -149,11 +144,7 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
     skipped = 0
     changed = 0
 
-    logger.info(
-        "Persist: processing %s draft(s) for deck import %s",
-        len(drafts),
-        deck.id,
-    )
+    ingest_info(deck.id, IngestPhase.PERSIST, f"saving studies. {len(drafts)} drafts.")
     for draft in drafts:
         key = f"{draft.section}\n{draft.title}"
         seen.add(key)
@@ -213,16 +204,16 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
         embed_inputs.append(summary)
         embed_inputs.extend(chunks)
 
-    logger.info(
-        "Persist: %s unchanged (hash skip), %s new/changed version(s)",
-        skipped,
-        changed,
+    ingest_info(
+        deck.id,
+        IngestPhase.PERSIST,
+        f"finished saving. {changed} changed, {skipped} unchanged.",
     )
     if embed_inputs:
-        logger.info(
-            "Persist: embedding %s text(s) for %s version(s)",
-            len(embed_inputs),
-            len(pending),
+        ingest_info(
+            deck.id,
+            IngestPhase.EMBED,
+            f"embedding {len(embed_inputs)} texts for {len(pending)} studies.",
         )
         vectors = embed_texts(embed_inputs)
         cursor = 0
@@ -240,9 +231,9 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
                     )
                 )
                 cursor += 1
-        logger.info("Persist: embeddings written")
+        ingest_info(deck.id, IngestPhase.EMBED, "finished embedding.")
     else:
-        logger.info("Persist: no embeddings needed")
+        ingest_info(deck.id, IngestPhase.EMBED, "no new embeddings needed.")
 
     hidden = 0
     for study in session.exec(select(Study).where(Study.status == "active")).all():
@@ -250,8 +241,11 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
             study.status = "hidden"
             session.add(study)
             hidden += 1
-    if hidden:
-        logger.info("Persist: hid %s study(ies) missing from this file", hidden)
+    ingest_info(
+        deck.id,
+        IngestPhase.HIDE,
+        f"hid {hidden} studies that were missing from this file.",
+    )
 
 
 def ensure_brand_asset() -> None:
