@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from functools import lru_cache
 from typing import Any, Literal
 
@@ -135,20 +136,30 @@ def _complete_json_langchain(
     # json_mode works on Groq and other OpenAI-compatible APIs.
     structured = model.with_structured_output(schema, method="json_mode")
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
-    attempts = 3
-    for attempt in range(attempts):
+    limit = max(0, settings.STRUCTURE_LLM_RETRY_LIMIT)
+    for attempt in range(limit + 1):
         try:
             return _as_json_object(structured.invoke(messages))
         except Exception as exc:
-            if attempt == attempts - 1 or not _retryable_json_error(exc):
+            if attempt == limit or not _retryable_json_error(exc):
                 raise
+            delay = _backoff_seconds(attempt)
             logger.warning(
-                "LLM complete_json role=%s %s; retrying (%s/2)",
+                "LLM complete_json role=%s %s; retrying in %.1fs (%s/%s)",
                 role,
                 _json_error_reason(exc),
+                delay,
                 attempt + 1,
+                limit,
             )
+            time.sleep(delay)
     raise RuntimeError("LLM complete_json retries exhausted")
+
+
+def _backoff_seconds(failed_attempt: int) -> float:
+    """Wait base seconds, then double after each failed structure call."""
+    base = settings.STRUCTURE_LLM_RETRY_BASE_SECONDS
+    return base * (2**failed_attempt)
 
 
 def _retryable_json_error(exc: BaseException) -> bool:

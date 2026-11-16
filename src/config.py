@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     STRUCTURE_LLM_REASONING_EFFORT: str
     # Completion cap for structure calls. 0 omits the field.
     STRUCTURE_LLM_MAX_TOKENS: int
+    # Retries after the first structure JSON call. Each wait doubles.
+    STRUCTURE_LLM_RETRY_LIMIT: int = 4
+    # Seconds before the first retry. Later retries wait twice as long.
+    STRUCTURE_LLM_RETRY_BASE_SECONDS: float = 1
     STRUCTURE_MODEL_REPO: str
     STRUCTURE_MODEL_FILE: str
     STRUCTURE_MODEL_THREADS: int

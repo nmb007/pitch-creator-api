@@ -1,8 +1,9 @@
-"""Two retries when a structure call returns unusable JSON."""
+"""Exponential backoff when a structure call returns unusable JSON."""
 
 import logging
 
 import pytest
+from src.config import settings
 from src.llm import complete_json
 
 SCHEMA = {"type": "object"}
@@ -36,6 +37,15 @@ class _Model:
         return self.structured
 
 
+@pytest.fixture(autouse=True)
+def _retry_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    waits: list[float] = []
+    monkeypatch.setattr("src.llm.time.sleep", waits.append)
+    monkeypatch.setattr(settings, "STRUCTURE_LLM_RETRY_LIMIT", 2)
+    monkeypatch.setattr(settings, "STRUCTURE_LLM_RETRY_BASE_SECONDS", 1.0)
+    return waits
+
+
 def _patch_model(monkeypatch: pytest.MonkeyPatch, results: list[object]) -> _Model:
     structured = _Structured(results)
     model = _Model(structured)
@@ -43,7 +53,10 @@ def _patch_model(monkeypatch: pytest.MonkeyPatch, results: list[object]) -> _Mod
     return model
 
 
-def test_retries_json_validate_failed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retries_json_validate_failed_once(
+    monkeypatch: pytest.MonkeyPatch,
+    _retry_clock: list[float],
+) -> None:
     model = _patch_model(
         monkeypatch,
         [_Fail("Error code: 400 json_validate_failed"), REPLY],
@@ -55,9 +68,13 @@ def test_retries_json_validate_failed_once(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(model.structured.messages) == 2
     assert model.structured.messages[0] == model.structured.messages[1]
     assert model.calls == [(SCHEMA, "json_mode")]
+    assert _retry_clock == [1.0]
 
 
-def test_second_retry_can_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_second_retry_can_succeed(
+    monkeypatch: pytest.MonkeyPatch,
+    _retry_clock: list[float],
+) -> None:
     model = _patch_model(
         monkeypatch,
         [
@@ -73,6 +90,24 @@ def test_second_retry_can_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(model.structured.messages) == 3
     first, second, third = model.structured.messages
     assert first == second == third
+    assert _retry_clock == [1.0, 2.0]
+
+
+def test_backoff_doubles_until_the_retry_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    _retry_clock: list[float],
+) -> None:
+    monkeypatch.setattr(settings, "STRUCTURE_LLM_RETRY_LIMIT", 3)
+    model = _patch_model(
+        monkeypatch,
+        [_Fail("json_validate_failed") for _ in range(4)],
+    )
+
+    with pytest.raises(_Fail, match="json_validate_failed"):
+        complete_json(system="sys", user="user", schema=SCHEMA, role="structure")
+
+    assert len(model.structured.messages) == 4
+    assert _retry_clock == [1.0, 2.0, 4.0]
 
 
 def test_json_validate_failed_after_two_retries_fails_the_call(
