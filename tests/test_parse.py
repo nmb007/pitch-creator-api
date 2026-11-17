@@ -9,7 +9,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from src.decks.blocks import TextBlock, read_pptx_blocks
 from src.decks.parse import parse_pptx
-from src.decks.validate import build_raw_text, titles_from_payload
+from src.decks.validate import build_raw_text, is_banner, titles_from_payload
 
 
 def test_period_ending_slide_continues_until_next_title(tmp_path) -> None:  # noqa: ANN001
@@ -679,6 +679,41 @@ def _find(blocks: list[tuple[int, str]], needle: str) -> int:
         if needle in line:
             return number
     raise AssertionError(f"Missing block containing {needle!r}")
+
+
+def test_section_headers_stay_out_of_raw_text() -> None:
+    headers = (
+        "Arbisoft E-commerce Case Studies",
+        "Arbisoft Case Studies for Humanitarian and Nonprofit Organizations",
+        "Arbisoft Case Studies for Non-Profit Organizations",
+        "Arbisoft Case Study for Zain Cash",
+        "Edly Instructional Design "
+        "(Content Management, Development & Course Authoring) Case Studies",
+        "Edly Case Studies",
+    )
+    for header in headers:
+        assert is_banner(header)
+    blocks = {
+        1: TextBlock(1, 1, "Edly Case Studies", "paragraph"),
+        2: TextBlock(2, 1, "A client story", "paragraph"),
+        3: TextBlock(3, 1, "Edly Case Studies", "paragraph"),
+        4: TextBlock(4, 1, "The team shipped the portal.", "paragraph"),
+    }
+    raw = build_raw_text(
+        [1, 2, 3, 4],
+        "A client story",
+        blocks,
+        title_block_numbers=[2],
+    )
+    assert raw == "The team shipped the portal."
+    sections, titles, held = titles_from_payload(
+        {"sections": [{"block_number": 1}], "titles": []},
+        blocks,
+        batch_numbers={1, 2, 3, 4},
+    )
+    assert sections == [{"name": "Edly Case Studies", "block_number": 1}]
+    assert titles == []
+    assert held is None
 
 
 def _write(slide, lines: list[str]) -> None:  # noqa: ANN001

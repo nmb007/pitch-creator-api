@@ -11,7 +11,6 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from src.decks.audit.labels import (
-    is_audit_banner,
     is_field_heading,
     is_forbidden_title,
 )
@@ -21,7 +20,7 @@ from src.decks.drafts import FIELD_NAMES, ImageDraft, chunk_texts, image_role
 from src.decks.models import DeckImport, Study, StudyChunk, StudyImage, StudyVersion
 from src.decks.parse import section_for
 from src.decks.service import SUMMARY_CHARS, deck_path, storage_root
-from src.decks.validate import build_raw_text
+from src.decks.validate import build_raw_text, is_banner
 from src.embeddings import embed_texts
 
 COSINE_THRESHOLD = 0.999
@@ -91,7 +90,7 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
         report.studies.append(study_report)
 
     for block in blocks:
-        if is_audit_banner(block.text):
+        if is_banner(block.text):
             report.unclaimed.append(
                 CheckResult(
                     "match",
@@ -448,12 +447,12 @@ def _audit_study(
             block
             for block in span
             if block.text.strip()
-            and not is_audit_banner(block.text)
+            and not is_banner(block.text)
             and not is_field_heading(block.text)
             and block.text.strip() not in divider_names
         ]
         for block in span:
-            if is_audit_banner(block.text) or is_field_heading(block.text):
+            if is_banner(block.text) or is_field_heading(block.text):
                 claimed_numbers.add(block.number)
             if block.text.strip() in divider_names:
                 claimed_numbers.add(block.number)
@@ -585,7 +584,7 @@ def _line_check(
     slides_by_number: dict[int, SlideBlocks],
     key: str,
 ) -> CheckResult:
-    if is_audit_banner(line):
+    if is_banner(line):
         return CheckResult(
             "incorrect",
             f'"{_title_from_key(key)}" {field} contains banner "{_short(line)}"',

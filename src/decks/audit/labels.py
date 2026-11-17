@@ -26,15 +26,9 @@ def normalize_label(text: str) -> str:
 
 
 def is_forbidden_title(text: str) -> bool:
-    return normalize_label(text) in FORBIDDEN_TITLES or is_audit_banner(text)
+    return normalize_label(text) in FORBIDDEN_TITLES or is_banner(text)
 
 
 def is_field_heading(text: str) -> bool:
     return normalize_label(text) in FORBIDDEN_TITLES
 
-
-def is_audit_banner(text: str) -> bool:
-    """Ingest banners, plus a section line that starts with Arbisoft Case Studies."""
-    if is_banner(text):
-        return True
-    return text.strip().lower().startswith("arbisoft case studies")

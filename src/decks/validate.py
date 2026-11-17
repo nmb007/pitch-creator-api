@@ -190,7 +190,7 @@ def _accept_section(
     if block is None:
         logger.warning("Skipping section; unknown block %s", number)
         return None
-    if _is_banner(block.text):
+    if _is_banner(block.text) and block.text.strip().lower() not in _SECTION_HEADER_BANNERS:
         logger.warning("Skipping section; block %s is a banner", number)
         return None
     name = block.text.strip()
@@ -308,6 +308,21 @@ def _unique_ints(values: list[int]) -> list[int]:
     return ordered
 
 
+# These lines are also real section dividers. raw_text leaves them out, and a
+# marked section divider with this text is still accepted.
+_SECTION_HEADER_BANNERS = frozenset(
+    {
+        "arbisoft e-commerce case studies",
+        "arbisoft case studies for humanitarian and nonprofit organizations",
+        "arbisoft case studies for non-profit organizations",
+        "arbisoft case study for zain cash",
+        "edly instructional design "
+        "(content management, development & course authoring) case studies",
+        "edly case studies",
+    }
+)
+
+
 def _is_banner(text: str) -> bool:
     """Running header or footer. These lines are not study body and not raw_text."""
     lowered = text.strip().lower()
@@ -319,7 +334,7 @@ def _is_banner(text: str) -> bool:
         "arbisoft case studies",
         "axim proposals",
         "edly.io",
-    }:
+    } or lowered in _SECTION_HEADER_BANNERS:
         return True
     if "edly.io" in lowered:
         return True
