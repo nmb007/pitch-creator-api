@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
-CheckStatus = Literal["match", "missing", "incorrect", "extra"]
+CheckStatus = Literal["match", "missing", "incorrect", "extra", "review"]
+
+HARD_ISSUE_STATUSES = frozenset({"missing", "incorrect", "extra"})
 
 
 @dataclass
@@ -26,7 +28,11 @@ class StudyReport:
 
     @property
     def issue_count(self) -> int:
-        return sum(1 for check in self.checks if check.status != "match")
+        return sum(1 for check in self.checks if check.status in HARD_ISSUE_STATUSES)
+
+    @property
+    def review_count(self) -> int:
+        return sum(1 for check in self.checks if check.status == "review")
 
     @property
     def fully_matched(self) -> bool:
@@ -51,13 +57,17 @@ class AuditReport:
         checks.extend(self.unclaimed)
         return checks
 
+    def scored_checks(self) -> list[CheckResult]:
+        """Checks that affect the headline score. Review overlaps are excluded."""
+        return [check for check in self.all_checks() if check.status != "review"]
+
     @property
     def passed(self) -> int:
-        return sum(1 for check in self.all_checks() if check.status == "match")
+        return sum(1 for check in self.scored_checks() if check.status == "match")
 
     @property
     def total(self) -> int:
-        return len(self.all_checks())
+        return len(self.scored_checks())
 
     @property
     def score_percent(self) -> float:
@@ -72,3 +82,12 @@ class AuditReport:
     @property
     def unclaimed_count(self) -> int:
         return sum(1 for check in self.unclaimed if check.status != "match")
+
+    @property
+    def field_overlaps(self) -> list[CheckResult]:
+        return [
+            check
+            for study in self.studies
+            for check in study.checks
+            if check.status == "review"
+        ]

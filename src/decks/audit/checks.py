@@ -125,7 +125,7 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
     report.attention = [
         check
         for check in report.all_checks()
-        if check.status != "match"
+        if check.status in {"missing", "incorrect", "extra"}
     ]
     return report
 
@@ -455,7 +455,6 @@ def _audit_study(
             (name, line) for name, lines in field_lines.items() for line in lines
         ]
         missing_body = 0
-        duplicate_body = 0
         for block in body:
             claimed_numbers.add(block.number)
             owners = {
@@ -474,16 +473,17 @@ def _audit_study(
                     )
                 )
             elif len(owners) > 1:
-                duplicate_body += 1
+                # Ingest allows one block in several fields (e.g. approach and
+                # solution). Keep that visible for review; do not treat as a hard fail.
                 report.checks.append(
                     CheckResult(
-                        "incorrect",
+                        "review",
                         f'"{study.title}" stores slide {block.slide} text in '
                         f"{', '.join(sorted(owners))}",
                         key,
                     )
                 )
-        if body and missing_body == 0 and duplicate_body == 0:
+        if body and missing_body == 0:
             report.checks.append(
                 CheckResult(
                     "match",
@@ -832,8 +832,8 @@ def _extra_active_studies(
             results.append(
                 CheckResult(
                     "extra",
-                    f'"{study.section} / {study.title}" is still active and its text '
-                    "is not in this file",
+                    f'section: {study.section}, case study: {study.title} is still '
+                    "active and its text is not in this file",
                 )
             )
     return results

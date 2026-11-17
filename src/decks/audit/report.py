@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.decks.audit.types import AuditReport, CheckResult
+from src.decks.audit.types import HARD_ISSUE_STATUSES, AuditReport, CheckResult
 
 
 def format_report(report: AuditReport) -> str:
@@ -18,10 +18,11 @@ def format_report(report: AuditReport) -> str:
         f"Score: {report.score_percent}% ({report.passed} of {report.total} checks)",
         f"Studies fully matched: {report.studies_fully_matched} of {len(report.studies)}",
         f"Text in the file stored by no study: {report.unclaimed_count} blocks",
+        f"Field overlaps to review: {len(report.field_overlaps)}",
         "",
         "## Deck-only issues",
     ]
-    deck_issues = [check for check in report.deck_checks if check.status != "match"]
+    deck_issues = [check for check in report.deck_checks if check.status in HARD_ISSUE_STATUSES]
     if deck_issues:
         for check in deck_issues:
             lines.append(f"- {_prefix(check)}: {check.message}")
@@ -40,11 +41,11 @@ def format_report(report: AuditReport) -> str:
             slides = _slide_label(study.slide_numbers)
             kept = "  —  kept from earlier import" if study.kept_from_earlier else ""
             lines.append(
-                f"### {study.section} / {study.title}  —  {slides}  —  "
-                f"{study.issue_count} issues{kept}"
+                f"### section: {study.section}, case study: {study.title}  —  "
+                f"{slides}  —  {study.issue_count} issues{kept}"
             )
             for check in study.checks:
-                if check.status == "match":
+                if check.status not in HARD_ISSUE_STATUSES:
                     continue
                 lines.append(f"- {_prefix(check)}: {check.message}")
             lines.append("")
@@ -56,6 +57,19 @@ def format_report(report: AuditReport) -> str:
     else:
         for check in missing:
             lines.append(f"- {check.message}")
+
+    lines.append("")
+    lines.append("## Field overlaps (review)")
+    lines.append(
+        "The same slide block appears in more than one field. Ingest allows this "
+        "(for example approach and solution). Confirm each overlap is intentional."
+    )
+    overlaps = report.field_overlaps
+    if not overlaps:
+        lines.append("- None")
+    else:
+        for check in overlaps:
+            lines.append(f"- Review: {check.message}")
     lines.append("")
     return "\n".join(lines)
 
@@ -66,6 +80,7 @@ def _prefix(check: CheckResult) -> str:
         "missing": "Missing",
         "incorrect": "Incorrect",
         "extra": "Extra",
+        "review": "Review",
     }[check.status]
 
 

@@ -31,9 +31,10 @@ def test_clean_study_scores_fully(monkeypatch, tmp_path) -> None:  # noqa: ANN00
     assert "Deck-only issues" in text
     assert "Studies with issues" in text
     assert "Text in the file stored by no study" in text
+    assert "Field overlaps (review)" in text
     assert "Needs attention" not in text
     assert "Match:" not in text
-    assert text.count("- None") >= 3
+    assert text.count("- None") >= 4
 
 
 def test_forbidden_title_the_challenge(monkeypatch, tmp_path) -> None:  # noqa: ANN001
@@ -216,6 +217,55 @@ def test_invented_field_line(monkeypatch, tmp_path) -> None:  # noqa: ANN001
         check.status == "incorrect" and "not a Docling block" in check.message
         for check in report.attention
     )
+
+
+def test_field_overlap_is_review_not_hard_issue(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=1,
+            blocks=[
+                TextBlock(1, 1, "Toastmasters LMS", "paragraph"),
+                TextBlock(2, 1, "They built a tiered learning path on Open edX.", "paragraph"),
+            ],
+        )
+    ]
+    shared = "They built a tiered learning path on Open edX."
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="Toastmasters LMS",
+        client_name="Toastmasters",
+        approach=shared,
+        solution=shared,
+        raw_text=shared,
+        slide_numbers=[1],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    study = report.studies[0]
+    assert study.fully_matched
+    assert study.issue_count == 0
+    assert study.review_count == 1
+    assert any(
+        check.status == "review"
+        and "approach" in check.message
+        and "solution" in check.message
+        for check in study.checks
+    )
+    text = format_report(report)
+    assert "Field overlaps (review)" in text
+    assert "Stores slide 1 text in approach, solution" in text or (
+        "approach, solution" in text and "Review:" in text
+    )
+    assert "Studies with issues" in text
+    # Overlaps must not appear under hard study issues.
+    studies_section = text.split("## Studies with issues", 1)[1].split(
+        "## Text in the file stored by no study", 1
+    )[0]
+    assert "approach, solution" not in studies_section
 
 
 def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa: ANN001
