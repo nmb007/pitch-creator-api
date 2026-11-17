@@ -263,6 +263,66 @@ def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa:
     )
 
 
+def test_banner_only_slide_not_in_expected_slide_numbers(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=38,
+            blocks=[
+                TextBlock(1, 38, "Analytics and Device Management for Teach the World", "paragraph"),
+                TextBlock(2, 38, "Teach the World needed device analytics.", "paragraph"),
+            ],
+        ),
+        SlideBlocks(
+            number=39,
+            blocks=[
+                TextBlock(
+                    3,
+                    39,
+                    "Arbisoft Case Studies for Non-Profit Organizations",
+                    "paragraph",
+                ),
+            ],
+        ),
+        SlideBlocks(
+            number=40,
+            blocks=[
+                TextBlock(4, 40, "Next Study After Banner", "paragraph"),
+                TextBlock(5, 40, "Next body.", "paragraph"),
+            ],
+        ),
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="Analytics and Device Management for Teach the World",
+        client_name="Teach the World",
+        background="Teach the World needed device analytics.",
+        raw_text="Teach the World needed device analytics.",
+        slide_numbers=[38, 39],
+        extra_studies=[
+            {
+                "section": "General",
+                "title": "Next Study After Banner",
+                "client_name": "Next",
+                "background": "Next body.",
+                "raw_text": "Next body.",
+                "slide_numbers": [40],
+            }
+        ],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    assert any(
+        check.status == "incorrect"
+        and "slide_numbers are [38, 39]" in check.message
+        and "expected [38]" in check.message
+        for check in report.attention
+    )
+
+
 def test_section_banner_and_heading_not_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     slides = [
         SlideBlocks(

@@ -457,8 +457,10 @@ def _audit_study(
                 )
             )
 
+        # Only title and real body slides. Banner / heading / divider slides in the
+        # span must not make an extra stored slide_number look correct.
         expected_slides = sorted(
-            {block.slide for block in title_blocks} | {block.slide for block in span}
+            {block.slide for block in title_blocks} | {block.slide for block in body}
         )
         stored_slides = sorted(version.slide_numbers or [])
         if stored_slides == expected_slides:
