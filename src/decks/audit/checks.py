@@ -73,6 +73,7 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
 
     stored = _load_stored_studies(session, deck)
     divider_marks = _divider_marks(stored, blocks)
+    stored_titles = _stored_title_starts(stored, blocks, divider_marks)
     claimed_numbers: set[int] = set()
     is_latest = _is_latest_completed(session, deck)
 
@@ -82,7 +83,7 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
             blocks=blocks,
             slides_by_number=slides_by_number,
             divider_marks=divider_marks,
-            stored_titles=_stored_title_starts(stored, blocks),
+            stored_titles=stored_titles,
             claimed_numbers=claimed_numbers,
         )
         report.studies.append(study_report)
@@ -190,19 +191,16 @@ def _images_for(session: Session, version_id: UUID) -> list[StudyImage]:
 
 
 def _divider_marks(stored: Sequence[StoredStudy], blocks: list[TextBlock]) -> list[tuple[int, str]]:
-    names = sorted(
-        {
-            item.study.section
-            for item in stored
-            if item.study.section and item.study.section != "General"
-        }
-    )
+    names = {
+        item.study.section
+        for item in stored
+        if item.study.section and item.study.section != "General"
+    }
     marks: list[tuple[int, str]] = []
-    for name in names:
-        for block in blocks:
-            if block.text.strip() == name:
-                marks.append((block.number, name))
-                break
+    for block in blocks:
+        text = block.text.strip()
+        if text in names:
+            marks.append((block.number, text))
     marks.sort(key=lambda item: item[0])
     return marks
 
@@ -216,28 +214,53 @@ def _section_for(block_number: int, marks: list[tuple[int, str]]) -> str:
     return current
 
 
-def _find_title_blocks(title: str, blocks: list[TextBlock]) -> list[TextBlock] | None:
+def _find_title_blocks(
+    title: str,
+    blocks: list[TextBlock],
+    *,
+    section: str,
+    divider_marks: list[tuple[int, str]],
+) -> list[TextBlock] | None:
+    """Locate this study's title in the file under its section.
+
+    The same title text in another section is a different study and must not
+    steal this one's slide span.
+    """
     compact = " ".join(title.split())
+    candidates: list[list[TextBlock]] = []
     for block in blocks:
         if block.text.strip() == title or " ".join(block.text.split()) == compact:
-            return [block]
+            candidates.append([block])
     for index, first in enumerate(blocks[:-1]):
         second = blocks[index + 1]
         joined = f"{first.text.strip()} {second.text.strip()}"
         if joined == title or " ".join(joined.split()) == compact:
-            return [first, second]
+            candidates.append([first, second])
+    in_section = [
+        candidate
+        for candidate in candidates
+        if _section_for(candidate[0].number, divider_marks) == section
+    ]
+    if in_section:
+        return in_section[0]
     return None
 
 
 def _stored_title_starts(
     stored: Sequence[StoredStudy],
     blocks: list[TextBlock],
+    divider_marks: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
     starts: list[tuple[int, str]] = []
     for item in stored:
-        found = _find_title_blocks(item.study.title, blocks)
+        found = _find_title_blocks(
+            item.study.title,
+            blocks,
+            section=item.study.section,
+            divider_marks=divider_marks,
+        )
         if found:
-            starts.append((found[0].number, item.study.title))
+            starts.append((found[0].number, f"{item.study.section}\n{item.study.title}"))
     starts.sort(key=lambda item: item[0])
     return starts
 
@@ -253,7 +276,7 @@ def _span_blocks(
     start = title_blocks[0].number
     last_title = max(block.number for block in title_blocks)
     next_start: int | None = None
-    for number, _other_title in title_starts:
+    for number, _key in title_starts:
         if number <= start:
             continue
         next_start = number
@@ -302,12 +325,18 @@ def _audit_study(
             )
         )
 
-    title_blocks = _find_title_blocks(study.title, blocks)
+    title_blocks = _find_title_blocks(
+        study.title,
+        blocks,
+        section=study.section,
+        divider_marks=divider_marks,
+    )
     if title_blocks is None:
         report.checks.append(
             CheckResult(
                 "missing",
-                f'title "{study.title}" is not a block (or adjacent pair) in this file',
+                f'title "{study.title}" is not a block (or adjacent pair) in '
+                f'section "{study.section}"',
                 key,
             )
         )
@@ -364,7 +393,13 @@ def _audit_study(
             CheckResult("incorrect", f'"{study.title}" client_name is Arbisoft (vendor)', key)
         )
     else:
-        source = _study_source_text(version, title_blocks, stored_titles, blocks)
+        source = _study_source_text(
+            version,
+            title_blocks,
+            stored_titles,
+            blocks,
+            divider_marks=divider_marks,
+        )
         if study.client_name.lower() in source.lower():
             report.checks.append(
                 CheckResult(
@@ -725,12 +760,19 @@ def _study_source_text(
     title_blocks: list[TextBlock] | None,
     stored_titles: list[tuple[int, str]],
     blocks: list[TextBlock],
+    divider_marks: list[tuple[int, str]] | None = None,
 ) -> str:
     parts = [version.raw_text or ""]
     for name in FIELD_NAMES:
         parts.append(getattr(version, name) or "")
     if title_blocks is not None:
-        span = _span_blocks(title_blocks, "", stored_titles, blocks)
+        span = _span_blocks(
+            title_blocks,
+            "",
+            stored_titles,
+            blocks,
+            divider_marks=divider_marks,
+        )
         parts.extend(block.text for block in title_blocks)
         parts.extend(block.text for block in span)
     return "\n".join(parts)
@@ -764,16 +806,34 @@ def _extra_active_studies(
     blocks: list[TextBlock],
 ) -> list[CheckResult]:
     stored_ids = {item.study.id for item in stored}
+    active = list(session.exec(select(Study).where(Study.status == "active")).all())
+    section_names = {
+        study.section
+        for study in active
+        if study.section and study.section != "General"
+    }
+    divider_marks = [
+        (block.number, block.text.strip())
+        for block in blocks
+        if block.text.strip() in section_names
+    ]
+    divider_marks.sort(key=lambda item: item[0])
     results: list[CheckResult] = []
-    for study in session.exec(select(Study).where(Study.status == "active")).all():
+    for study in active:
         if study.id in stored_ids:
             continue
-        found = _find_title_blocks(study.title, blocks)
+        found = _find_title_blocks(
+            study.title,
+            blocks,
+            section=study.section,
+            divider_marks=divider_marks,
+        )
         if found is None:
             results.append(
                 CheckResult(
                     "extra",
-                    f'"{study.title}" is still active and its text is not in this file',
+                    f'"{study.section} / {study.title}" is still active and its text '
+                    "is not in this file",
                 )
             )
     return results

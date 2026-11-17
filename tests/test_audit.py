@@ -139,7 +139,7 @@ def test_wrong_section_divider(monkeypatch, tmp_path) -> None:  # noqa: ANN001
         slide_numbers=[2],
         extra_studies=[
             {
-                "section": "Mobile App Development",
+                "section": "Ecommerce",
                 "title": "Wanderu travel",
                 "client_name": "Wanderu",
                 "background": "Wanderu added carriers.",
@@ -151,10 +151,11 @@ def test_wrong_section_divider(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
     monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
     report = run_audit(deck_id)
+    # Title lives under Mobile App Development; stored section Ecommerce finds no title there.
     assert any(
-        check.status == "incorrect"
-        and "stored as Ecommerce" in check.message
-        and "Mobile App Development" in check.message
+        check.status == "missing"
+        and "KAYAK mobile" in check.message
+        and 'section "Ecommerce"' in check.message
         for check in report.attention
     )
 
@@ -263,12 +264,87 @@ def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa:
     )
 
 
+def test_same_title_in_two_sections_uses_each_section_span(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(number=1, blocks=[TextBlock(1, 1, "Mobile App Development", "paragraph")]),
+        SlideBlocks(
+            number=2,
+            blocks=[
+                TextBlock(
+                    2,
+                    2,
+                    "Building a Scalable LMS for Tiered Learning at Toastmasters",
+                    "paragraph",
+                ),
+                TextBlock(3, 2, "Mobile Toastmasters needed an LMS.", "paragraph"),
+            ],
+        ),
+        SlideBlocks(number=3, blocks=[TextBlock(4, 3, "Edly Case Studies", "paragraph")]),
+        SlideBlocks(
+            number=4,
+            blocks=[
+                TextBlock(
+                    5,
+                    4,
+                    "Building a Scalable LMS for Tiered Learning at Toastmasters",
+                    "paragraph",
+                ),
+                TextBlock(6, 4, "Edly Toastmasters needed a tiered LMS.", "paragraph"),
+                TextBlock(7, 4, "They shipped on Open edX.", "paragraph"),
+            ],
+        ),
+    ]
+    toastmasters_title = "Building a Scalable LMS for Tiered Learning at Toastmasters"
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="Edly Case Studies",
+        title=toastmasters_title,
+        client_name="Toastmasters",
+        background="Edly Toastmasters needed a tiered LMS.",
+        challenge="They shipped on Open edX.",
+        raw_text="Edly Toastmasters needed a tiered LMS.\nThey shipped on Open edX.",
+        slide_numbers=[4],
+        extra_studies=[
+            {
+                "section": "Mobile App Development",
+                "title": toastmasters_title,
+                "client_name": "Toastmasters",
+                "background": "Mobile Toastmasters needed an LMS.",
+                "raw_text": "Mobile Toastmasters needed an LMS.",
+                "slide_numbers": [2],
+            }
+        ],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    edly = next(study for study in report.studies if study.section == "Edly Case Studies")
+    mobile = next(
+        study for study in report.studies if study.section == "Mobile App Development"
+    )
+    assert edly.fully_matched
+    assert mobile.fully_matched
+    assert edly.slide_numbers == [4]
+    assert mobile.slide_numbers == [2]
+    assert not any(
+        "slide_numbers are [4]" in check.message and "expected [2]" in check.message
+        for check in edly.checks
+    )
+
+
 def test_banner_only_slide_not_in_expected_slide_numbers(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     slides = [
         SlideBlocks(
             number=38,
             blocks=[
-                TextBlock(1, 38, "Analytics and Device Management for Teach the World", "paragraph"),
+                TextBlock(
+                    1,
+                    38,
+                    "Analytics and Device Management for Teach the World",
+                    "paragraph",
+                ),
                 TextBlock(2, 38, "Teach the World needed device analytics.", "paragraph"),
             ],
         ),

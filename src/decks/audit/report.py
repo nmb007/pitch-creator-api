@@ -40,7 +40,7 @@ def format_report(report: AuditReport) -> str:
             slides = _slide_label(study.slide_numbers)
             kept = "  —  kept from earlier import" if study.kept_from_earlier else ""
             lines.append(
-                f"### {study.title}  —  {study.section}  —  {slides}  —  "
+                f"### {study.section} / {study.title}  —  {slides}  —  "
                 f"{study.issue_count} issues{kept}"
             )
             for check in study.checks:
