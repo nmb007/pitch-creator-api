@@ -19,10 +19,11 @@ def format_report(report: AuditReport) -> str:
         f"Studies fully matched: {report.studies_fully_matched} of {len(report.studies)}",
         f"Text in the file stored by no study: {report.unclaimed_count} blocks",
         "",
-        "## Needs attention",
+        "## Deck-only issues",
     ]
-    if report.attention:
-        for check in report.attention:
+    deck_issues = [check for check in report.deck_checks if check.status != "match"]
+    if deck_issues:
+        for check in deck_issues:
             lines.append(f"- {_prefix(check)}: {check.message}")
     else:
         lines.append("- None")

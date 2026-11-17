@@ -28,10 +28,12 @@ def test_clean_study_scores_fully(monkeypatch, tmp_path) -> None:  # noqa: ANN00
     assert report.unclaimed_count == 0
     assert (Path(deck_service.storage_root()) / "reports" / f"{deck_id}.md").exists()
     text = format_report(report)
-    assert "Needs attention" in text
+    assert "Deck-only issues" in text
     assert "Studies with issues" in text
+    assert "Text in the file stored by no study" in text
+    assert "Needs attention" not in text
     assert "Match:" not in text
-    assert text.count("- None") >= 2
+    assert text.count("- None") >= 3
 
 
 def test_forbidden_title_the_challenge(monkeypatch, tmp_path) -> None:  # noqa: ANN001
