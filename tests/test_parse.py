@@ -524,7 +524,9 @@ def test_raw_text_drops_title_and_banners(tmp_path) -> None:  # noqa: ANN001
         slide,
         [
             "Arbisoft Proposal for XYZ Ltd",
+            "Edly Proposal for Axim Collaborative",
             "Confidential",
+            "Proposal valid till December 1, 2026",
             "Cross-Platform Development and Security Enhancement for Landit",
             "The Challenge",
             "Landit needed a mobile app.",
@@ -542,7 +544,9 @@ def test_raw_text_drops_title_and_banners(tmp_path) -> None:  # noqa: ANN001
         blocks,
     )
     assert "Arbisoft Proposal" not in raw
+    assert "Edly Proposal" not in raw
     assert "Confidential" not in raw
+    assert "valid till" not in raw
     assert "Landit needed" in raw
     assert "The Challenge" in raw
     assert "React Native" in raw

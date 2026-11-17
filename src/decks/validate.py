@@ -309,10 +309,21 @@ def _unique_ints(values: list[int]) -> list[int]:
 
 
 def _is_banner(text: str) -> bool:
+    """Running header or footer. These lines are not study body and not raw_text."""
     lowered = text.strip().lower()
-    if lowered in {"www.arbisoft.com", "confidential", "arbisoft case studies"}:
+    if not lowered:
+        return False
+    if lowered in {
+        "www.arbisoft.com",
+        "confidential",
+        "arbisoft case studies",
+        "axim proposals",
+        "edly.io",
+    }:
         return True
-    if lowered.startswith("arbisoft proposal"):
+    if "edly.io" in lowered:
+        return True
+    if lowered.startswith("arbisoft proposal") or lowered.startswith("edly proposal"):
         return True
     if "valid till" in lowered or lowered.startswith("proposal valid"):
         return True

@@ -17,9 +17,11 @@ from src.decks.audit.labels import (
 )
 from src.decks.audit.types import AuditReport, CheckResult, StudyReport
 from src.decks.blocks import SlideBlocks, TextBlock, read_pptx_blocks
-from src.decks.drafts import FIELD_NAMES, ImageDraft
+from src.decks.drafts import FIELD_NAMES, ImageDraft, chunk_texts, image_role
 from src.decks.models import DeckImport, Study, StudyChunk, StudyImage, StudyVersion
+from src.decks.parse import section_for
 from src.decks.service import SUMMARY_CHARS, deck_path, storage_root
+from src.decks.validate import build_raw_text
 from src.embeddings import embed_texts
 
 COSINE_THRESHOLD = 0.999
@@ -205,26 +207,19 @@ def _divider_marks(stored: Sequence[StoredStudy], blocks: list[TextBlock]) -> li
     return marks
 
 
-def _section_for(block_number: int, marks: list[tuple[int, str]]) -> str:
-    current = "General"
-    for mark_block, name in marks:
-        if mark_block > block_number:
-            break
-        current = name
-    return current
-
-
 def _find_title_blocks(
     title: str,
     blocks: list[TextBlock],
     *,
     section: str,
     divider_marks: list[tuple[int, str]],
+    slide_numbers: Sequence[int] | None = None,
 ) -> list[TextBlock] | None:
     """Locate this study's title in the file under its section.
 
-    The same title text in another section is a different study and must not
-    steal this one's slide span.
+    The same title text in another section is a different study. An earlier
+    copy of the title is also a different place: ingest stored this study on
+    its slide_numbers, so that copy is the span boundary.
     """
     compact = " ".join(title.split())
     candidates: list[list[TextBlock]] = []
@@ -239,11 +234,20 @@ def _find_title_blocks(
     in_section = [
         candidate
         for candidate in candidates
-        if _section_for(candidate[0].number, divider_marks) == section
+        if section_for(candidate[0].number, divider_marks) == section
     ]
-    if in_section:
-        return in_section[0]
-    return None
+    if not in_section:
+        return None
+    stored_slides = set(slide_numbers or [])
+    if stored_slides:
+        on_stored_slide = [
+            candidate
+            for candidate in in_section
+            if candidate[0].slide in stored_slides
+        ]
+        if on_stored_slide:
+            return on_stored_slide[0]
+    return in_section[0]
 
 
 def _stored_title_starts(
@@ -258,6 +262,7 @@ def _stored_title_starts(
             blocks,
             section=item.study.section,
             divider_marks=divider_marks,
+            slide_numbers=item.version.slide_numbers,
         )
         if found:
             starts.append((found[0].number, f"{item.study.section}\n{item.study.title}"))
@@ -330,6 +335,7 @@ def _audit_study(
         blocks,
         section=study.section,
         divider_marks=divider_marks,
+        slide_numbers=version.slide_numbers,
     )
     if title_blocks is None:
         report.checks.append(
@@ -362,7 +368,7 @@ def _audit_study(
             claimed_numbers.add(block.number)
 
     if title_blocks is not None:
-        expected = _section_for(title_blocks[0].number, divider_marks)
+        expected = section_for(title_blocks[0].number, divider_marks)
         if study.section == expected:
             report.checks.append(
                 CheckResult(
@@ -464,11 +470,12 @@ def _audit_study(
             }
             if not owners:
                 missing_body += 1
+                columns = ", ".join(FIELD_NAMES[:-1]) + f", or {FIELD_NAMES[-1]}"
                 report.checks.append(
                     CheckResult(
                         "missing",
-                        f'"{study.title}" left out a body block on slide {block.slide}: '
-                        f'"{_short(block.text)}"',
+                        f'"{study.title}" body block on slide {block.slide} '
+                        f'was not found in {columns}: "{_short(block.text)}"',
                         key,
                     )
                 )
@@ -488,6 +495,37 @@ def _audit_study(
                 CheckResult(
                     "match",
                     f"six fields cover {len(body)} body blocks in the study span",
+                    key,
+                )
+            )
+
+        expected_raw = build_raw_text(
+            [block.number for block in span],
+            study.title,
+            {block.number: block for block in span},
+            title_block_numbers=[block.number for block in title_blocks],
+        )
+        expected_lines = [line.strip() for line in expected_raw.splitlines() if line.strip()]
+        raw_line_set = {line.strip() for line in raw_lines}
+        missing_raw = 0
+        for line in expected_lines:
+            if line in raw_line_set:
+                continue
+            missing_raw += 1
+            slide = _slide_for_line(span, line)
+            report.checks.append(
+                CheckResult(
+                    "missing",
+                    f'"{study.title}" body block on slide {slide} '
+                    f'was not found in raw_text: "{_short(line)}"',
+                    key,
+                )
+            )
+        if expected_lines and missing_raw == 0:
+            report.checks.append(
+                CheckResult(
+                    "match",
+                    f"raw_text includes all {len(expected_lines)} lines from the study span",
                     key,
                 )
             )
@@ -529,6 +567,15 @@ def _audit_study(
         _image_checks(item, slides_by_number=slides_by_number, study_key=key)
     )
     return report
+
+
+def _slide_for_line(span: list[TextBlock], line: str) -> int:
+    """Slide of the span block that ingest would copy into raw_text."""
+    for block in span:
+        parts = [part.strip() for part in block.text.splitlines() if part.strip()]
+        if line in parts:
+            return block.slide
+    return span[0].slide
 
 
 def _line_check(
@@ -576,13 +623,7 @@ def _line_check(
 
 def _chunk_checks(item: StoredStudy, key: str) -> list[CheckResult]:
     version = item.version
-    expected = [
-        getattr(version, name)
-        for name in FIELD_NAMES
-        if getattr(version, name)
-    ]
-    if not expected:
-        expected = [version.raw_text] if version.raw_text else ["Untitled study"]
+    expected = chunk_texts(version)
     results: list[CheckResult] = []
     chunks = sorted(item.chunks, key=lambda row: row.position)
     if [row.position for row in chunks] != list(range(1, len(chunks) + 1)):
@@ -694,7 +735,7 @@ def _image_checks(
     expected_digests = [hashlib.sha256(image.data).hexdigest() for image in expected]
     for index, _image in enumerate(expected):
         digest = expected_digests[index]
-        role = "logo" if index == 0 and study.client_name else "other"
+        role = image_role(index, study.client_name)
         match = next((row for row in stored if row.sha256 == digest), None)
         if match is None:
             results.append(

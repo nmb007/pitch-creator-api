@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.decks.validate import DATE_LINE
+from src.decks.validate import is_banner
 
 FORBIDDEN_TITLES = frozenset(
     {
@@ -34,26 +34,7 @@ def is_field_heading(text: str) -> bool:
 
 
 def is_audit_banner(text: str) -> bool:
-    """Banners for audit, including Edly and Axim footers the import still misses."""
-    lowered = text.strip().lower()
-    if not lowered:
-        return False
-    if lowered in {
-        "www.arbisoft.com",
-        "confidential",
-        "arbisoft case studies",
-        "axim proposals",
-        "edly.io",
-    }:
+    """Ingest banners, plus a section line that starts with Arbisoft Case Studies."""
+    if is_banner(text):
         return True
-    if lowered.startswith("arbisoft case studies"):
-        return True
-    if "edly.io" in lowered:
-        return True
-    if lowered.startswith("arbisoft proposal"):
-        return True
-    if lowered.startswith("edly proposal"):
-        return True
-    if "valid till" in lowered or lowered.startswith("proposal valid"):
-        return True
-    return bool(DATE_LINE.match(text.strip()))
+    return text.strip().lower().startswith("arbisoft case studies")

@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 
 from src.config import settings
 from src.database import get_sync_session
-from src.decks.drafts import FIELD_NAMES, StudyDraft
+from src.decks.drafts import StudyDraft, chunk_texts, image_role
 from src.decks.ingest_log import IngestPhase, ingest_info
 from src.decks.models import (
     BrandAsset,
@@ -180,7 +180,7 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
         if current is not None:
             current.is_current = False
             session.add(current)
-        chunks = _chunks(draft)
+        chunks = chunk_texts(draft)
         summary = f"{draft.section}\n{draft.title}\n{draft.raw_text[:SUMMARY_CHARS]}"
         version = StudyVersion(
             study_id=study.id,
@@ -287,13 +287,6 @@ def _counts(session: Session, deck_id: UUID) -> tuple[int, int, int]:
     return added, updated, hidden
 
 
-def _chunks(draft: StudyDraft) -> list[str]:
-    parts = [getattr(draft, name) for name in FIELD_NAMES if getattr(draft, name)]
-    if not parts:
-        parts = [draft.raw_text] if draft.raw_text else ["Untitled study"]
-    return parts
-
-
 def _save_images(session: Session, version: StudyVersion, draft: StudyDraft) -> None:
     folder = storage_root() / "study-images"
     folder.mkdir(parents=True, exist_ok=True)
@@ -304,7 +297,7 @@ def _save_images(session: Session, version: StudyVersion, draft: StudyDraft) -> 
         target = storage_root() / key
         if not target.exists():
             target.write_bytes(image.data)
-        role = "logo" if index == 0 and draft.client_name else "other"
+        role = image_role(index, draft.client_name)
         session.add(
             StudyImage(
                 study_version_id=version.id,

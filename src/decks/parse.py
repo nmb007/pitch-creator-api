@@ -210,7 +210,7 @@ def _collect_title_anchors(
     anchors.sort(key=lambda item: item["start"])
     section_marks.sort(key=lambda item: item[0])
     for anchor in anchors:
-        anchor["section"] = _section_for(anchor["start"], section_marks)
+        anchor["section"] = section_for(anchor["start"], section_marks)
     if log_id is not None:
         ingest_info(
             log_id,
@@ -221,7 +221,7 @@ def _collect_title_anchors(
     return anchors
 
 
-def _section_for(block_number: int, section_marks: list[tuple[int, str]]) -> str:
+def section_for(block_number: int, section_marks: list[tuple[int, str]]) -> str:
     current = "General"
     for mark_block, name in section_marks:
         if mark_block > block_number:

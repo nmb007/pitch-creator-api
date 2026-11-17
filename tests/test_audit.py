@@ -172,6 +172,39 @@ def test_null_client_name(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     )
 
 
+def test_header_lines_are_not_required_in_raw_text(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=143,
+            blocks=[
+                TextBlock(1, 143, "Caliper analytics", "paragraph"),
+                TextBlock(2, 143, "Edly Proposal for Axim Collaborative", "paragraph"),
+                TextBlock(3, 143, "Confidential", "paragraph"),
+                TextBlock(4, 143, "Proposal valid till December 1, 2026", "paragraph"),
+                TextBlock(5, 143, "Admins can analyze learning activity.", "paragraph"),
+            ],
+        )
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="Caliper analytics",
+        client_name="Caliper",
+        background="Admins can analyze learning activity.",
+        raw_text="Admins can analyze learning activity.",
+        slide_numbers=[143],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    assert not any(
+        check.status == "missing" and "was not found in" in check.message
+        for check in report.attention
+    )
+
+
 def test_banner_in_raw_text(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     slides = [
         SlideBlocks(
@@ -268,6 +301,142 @@ def test_field_overlap_is_review_not_hard_issue(monkeypatch, tmp_path) -> None: 
     assert "approach, solution" not in studies_section
 
 
+def test_raw_text_missing_body_block(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=1,
+            blocks=[
+                TextBlock(
+                    1,
+                    1,
+                    "CLEAResult Consulting Inc. - Optimizing Learner Groups",
+                    "paragraph",
+                ),
+                TextBlock(2, 1, "CLEAResult needed targeted training groups.", "paragraph"),
+                TextBlock(3, 1, "The second paragraph was left out of raw_text.", "paragraph"),
+            ],
+        )
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="CLEAResult Consulting Inc. - Optimizing Learner Groups",
+        client_name="CLEAResult",
+        background="CLEAResult needed targeted training groups.",
+        raw_text="CLEAResult needed targeted training groups.",
+        slide_numbers=[1],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    assert any(
+        check.status == "missing"
+        and "was not found in raw_text" in check.message
+        and "second paragraph" in check.message
+        for check in report.attention
+    )
+
+
+def test_raw_text_keeps_field_headings(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=1,
+            blocks=[
+                TextBlock(1, 1, "KAYAK mobile", "paragraph"),
+                TextBlock(2, 1, "The Challenge", "paragraph"),
+                TextBlock(3, 1, "The Approach", "paragraph"),
+                TextBlock(4, 1, "KAYAK needed a faster app.", "paragraph"),
+            ],
+        )
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="KAYAK mobile",
+        client_name="KAYAK",
+        challenge="KAYAK needed a faster app.",
+        raw_text="KAYAK needed a faster app.",
+        slide_numbers=[1],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    messages = [check.message for check in report.attention if check.status == "missing"]
+    assert any(
+        "was not found in raw_text" in message and "The Challenge" in message
+        for message in messages
+    )
+    assert any(
+        "was not found in raw_text" in message and "The Approach" in message
+        for message in messages
+    )
+    assert not any(
+        "was not found in background" in message and "The Challenge" in message
+        for message in messages
+    )
+
+
+def test_earlier_copy_of_next_title_does_not_extend_span(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=1,
+            blocks=[
+                TextBlock(1, 1, "Case Study: Harvard LabXchange", "paragraph"),
+                TextBlock(2, 1, "A contents line about Harvard.", "paragraph"),
+            ],
+        ),
+        SlideBlocks(
+            number=2,
+            blocks=[
+                TextBlock(3, 2, "ALW in the MENA Region", "paragraph"),
+                TextBlock(4, 2, "ALW delivered K-12 content.", "paragraph"),
+            ],
+        ),
+        SlideBlocks(
+            number=3,
+            blocks=[
+                TextBlock(5, 3, "Case Study: Harvard LabXchange", "paragraph"),
+                TextBlock(6, 3, "Harvard reached 20 million learners.", "paragraph"),
+            ],
+        ),
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="ALW in the MENA Region",
+        client_name="ALW",
+        background="ALW delivered K-12 content.",
+        raw_text="ALW delivered K-12 content.",
+        slide_numbers=[2],
+        extra_studies=[
+            {
+                "section": "General",
+                "title": "Case Study: Harvard LabXchange",
+                "client_name": "Harvard",
+                "background": "Harvard reached 20 million learners.",
+                "raw_text": "Harvard reached 20 million learners.",
+                "slide_numbers": [3],
+            }
+        ],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    alw = next(study for study in report.studies if study.title == "ALW in the MENA Region")
+    harvard = next(
+        study for study in report.studies if study.title == "Case Study: Harvard LabXchange"
+    )
+    assert alw.fully_matched
+    assert harvard.fully_matched
+    assert not any("Harvard" in check.message for check in alw.checks if check.status != "match")
+
+
 def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     slides = [
         SlideBlocks(
@@ -290,7 +459,11 @@ def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa:
         title="KAYAK mobile",
         client_name="KAYAK",
         challenge="KAYAK needed a faster app.",
-        raw_text="KAYAK needed a faster app.\nand the team shipped the iOS client.",
+        raw_text=(
+            "The Challenge\n"
+            "KAYAK needed a faster app.\n"
+            "and the team shipped the iOS client."
+        ),
         slide_numbers=[1],
         extra_studies=[
             {
@@ -308,7 +481,8 @@ def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa:
     report = run_audit(deck_id)
     assert any(
         check.status == "missing"
-        and "left out a body block" in check.message
+        and "was not found in background, challenge, approach, solution, outcome, or tech_stack"
+        in check.message
         and "iOS client" in check.message
         for check in report.attention
     )
@@ -425,7 +599,10 @@ def test_banner_only_slide_not_in_expected_slide_numbers(monkeypatch, tmp_path) 
         title="Analytics and Device Management for Teach the World",
         client_name="Teach the World",
         background="Teach the World needed device analytics.",
-        raw_text="Teach the World needed device analytics.",
+        raw_text=(
+            "Teach the World needed device analytics.\n"
+            "Arbisoft Case Studies for Non-Profit Organizations"
+        ),
         slide_numbers=[38, 39],
         extra_studies=[
             {
@@ -479,7 +656,12 @@ def test_section_banner_and_heading_not_missing_from_fields(monkeypatch, tmp_pat
         client_name="Rizq",
         background="Rizq needed donation tracking.",
         tech_stack="Python and Django",
-        raw_text="Rizq needed donation tracking.\nPython and Django",
+        raw_text=(
+            "Rizq needed donation tracking.\n"
+            "The Technology Stack\n"
+            "Python and Django\n"
+            "Arbisoft Case Studies for Non-Profit Organizations"
+        ),
         slide_numbers=[1],
         extra_studies=[
             {
@@ -497,7 +679,7 @@ def test_section_banner_and_heading_not_missing_from_fields(monkeypatch, tmp_pat
     report = run_audit(deck_id)
     rizq = next(study for study in report.studies if study.title == "Rizq digital presence")
     assert not any(
-        check.status == "missing" and "left out" in check.message for check in rizq.checks
+        check.status == "missing" and "was not found in" in check.message for check in rizq.checks
     )
 
 
