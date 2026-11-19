@@ -129,6 +129,7 @@ def _collect_outline(
             held_heading=held_heading,
         )
         accepted: list[dict[str, Any]] | None = None
+        accepted_payload: dict[str, Any] | None = None
         last_error = ""
         rejected: list[dict[str, Any]] = []
         for attempt in range(retry_limit + 1):
@@ -139,8 +140,7 @@ def _collect_outline(
                     blocks_by_number,
                     batch_numbers=batch_numbers,
                 )
-                if persist_cache:
-                    commit_outline_cache(message, payload)
+                accepted_payload = payload
                 break
             except StructureValidationError as exc:
                 last_error = str(exc)
@@ -159,10 +159,60 @@ def _collect_outline(
                         IngestPhase.OUTLINE,
                         f"outline rejected for slides {slide_range(slide_nos)}: {last_error}",
                     )
-        if accepted is None:
+        if accepted is None or accepted_payload is None:
             raise StructureValidationError(
                 f"Outline failed for slides {slide_range(slide_nos)}: {last_error}"
             )
+
+        # One extra try when a category divider and field headings are present
+        # but the model marked no case-study title (common miss).
+        if _section_headings_without_title(accepted):
+            if log_id is not None:
+                ingest_info(
+                    log_id,
+                    IngestPhase.OUTLINE,
+                    f"outline title-miss retry for slides {slide_range(slide_nos)}: "
+                    f"found section and field heading(s) but 0 titles; calling model once more.",
+                )
+            if persist_cache:
+                discard_outline_cache(message)
+            rejected.append(
+                {
+                    "attempt": "title-miss",
+                    "error": "section and field headings present but 0 titles",
+                    "payload": _debug_payload(accepted_payload),
+                }
+            )
+            retry_payload = complete(message)
+            try:
+                retried = outline_from_payload(
+                    retry_payload,
+                    blocks_by_number,
+                    batch_numbers=batch_numbers,
+                )
+                accepted = retried
+                accepted_payload = retry_payload
+                retry_titles = sum(1 for item in accepted if item["block_type"] == "title")
+                if log_id is not None:
+                    ingest_info(
+                        log_id,
+                        IngestPhase.OUTLINE,
+                        f"outline title-miss retry result for slides "
+                        f"{slide_range(slide_nos)}: {retry_titles} title(s).",
+                    )
+            except StructureValidationError as exc:
+                if persist_cache:
+                    discard_outline_cache(message)
+                if log_id is not None:
+                    ingest_info(
+                        log_id,
+                        IngestPhase.OUTLINE,
+                        f"outline title-miss retry rejected for slides "
+                        f"{slide_range(slide_nos)}: {exc}; keeping first accepted outline.",
+                    )
+
+        if persist_cache:
+            commit_outline_cache(message, accepted_payload)
 
         debug_batches.append(
             {
@@ -199,6 +249,14 @@ def _collect_outline(
             f"finished labeling. {len(labeled)} blocks from {model_calls} calls.",
         )
     return labeled, debug_batches
+
+
+def _section_headings_without_title(accepted: list[dict[str, Any]]) -> bool:
+    """True when a batch has a section and field headings but no study title."""
+    has_section = any(item["block_type"] == "section" for item in accepted)
+    has_heading = any(item["block_type"] == "heading" for item in accepted)
+    has_title = any(item["block_type"] == "title" for item in accepted)
+    return has_section and has_heading and not has_title
 
 
 def _next_held_heading(

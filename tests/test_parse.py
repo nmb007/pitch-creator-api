@@ -291,6 +291,104 @@ def test_outline_promotes_known_divider_titles_to_section() -> None:
         assert is_banner(text)
 
 
+def test_outline_retries_once_when_section_and_headings_lack_title(
+    tmp_path,  # noqa: ANN001
+    monkeypatch: Any,
+) -> None:
+    """Section + field headings with 0 titles triggers one extra model call."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 2)
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    divider = presentation.slides.add_slide(blank)
+    _write(divider, ["Data Scraping", "www.arbisoft.com"])
+    study = presentation.slides.add_slide(blank)
+    _write(
+        study,
+        [
+            "Innovative Data Solutions for the Food & Beverage Industry",
+            "The Challenge",
+            "BurgerIndex faced unstructured data.",
+        ],
+    )
+    presentation.save(path)
+
+    calls = {"n": 0}
+
+    def complete(message: str) -> dict[str, Any]:
+        calls["n"] += 1
+        blocks = _block_rows(message)
+        items: list[dict[str, Any]] = []
+        for number, _slide, text in blocks:
+            if text == "Data Scraping":
+                items.append(
+                    {"block_id": number, "block_type": "section", "field": "", "children": []}
+                )
+            elif text == "Innovative Data Solutions for the Food & Beverage Industry":
+                # First reply misses the title; retry corrects it.
+                block_type = "paragraph" if calls["n"] == 1 else "title"
+                items.append(
+                    {
+                        "block_id": number,
+                        "block_type": block_type,
+                        "field": "",
+                        "children": [],
+                    }
+                )
+            elif text == "The Challenge":
+                items.append(
+                    {
+                        "block_id": number,
+                        "block_type": "heading",
+                        "field": "challenge",
+                        "children": [],
+                    }
+                )
+            elif is_banner(text):
+                items.append(
+                    {"block_id": number, "block_type": "header_note", "field": "", "children": []}
+                )
+            else:
+                items.append(
+                    {"block_id": number, "block_type": "paragraph", "field": "", "children": []}
+                )
+        return {"blocks": items}
+
+    drafts = parse_pptx(path, complete=complete)
+    assert calls["n"] == 2
+    assert len(drafts) == 1
+    assert drafts[0].title.startswith("Innovative Data Solutions")
+    assert drafts[0].section == "Data Scraping"
+
+
+def test_outline_skips_title_miss_retry_without_headings(
+    tmp_path,  # noqa: ANN001
+    monkeypatch: Any,
+) -> None:
+    """A section-only divider batch must not trigger the title-miss retry."""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 1)
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    divider = presentation.slides.add_slide(blank)
+    _write(divider, ["Data Scraping", "www.arbisoft.com"])
+    presentation.save(path)
+
+    calls = {"n": 0}
+
+    def complete(message: str) -> dict[str, Any]:
+        calls["n"] += 1
+        blocks = _block_rows(message)
+        return _outline_payload(blocks, title_ids=set(), section_ids={_find(blocks, "Data Scraping")})
+
+    assert parse_pptx(path, complete=complete) == []
+    assert calls["n"] == 1
+
+
 def test_joined_travel_divider_becomes_section_not_study(tmp_path) -> None:  # noqa: ANN001
     """Docling can split a divider across lines; joined text must still be a section."""
     path = tmp_path / "deck.pptx"
