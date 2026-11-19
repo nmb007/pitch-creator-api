@@ -210,6 +210,7 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
         4: TextBlock(4, 2, "What the Company Is?", "paragraph"),
         5: TextBlock(5, 2, "What We Did?", "paragraph"),
         6: TextBlock(6, 2, "Covers all industries", "paragraph"),
+        7: TextBlock(7, 11, "Format", "paragraph"),
     }
     labeled = outline_from_payload(
         {
@@ -230,10 +231,11 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
                     "children": [],
                 },
                 {"block_id": 6, "block_type": "paragraph", "field": "", "children": []},
+                {"block_id": 7, "block_type": "section", "field": "", "children": []},
             ]
         },
         blocks,
-        batch_numbers={1, 2, 3, 4, 5, 6},
+        batch_numbers={1, 2, 3, 4, 5, 6, 7},
     )
     by_id = {item["block_id"]: item for item in labeled}
     assert by_id[1]["block_type"] == "section"
@@ -241,6 +243,7 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
     assert by_id[4]["block_type"] == "header_note"
     assert by_id[5]["block_type"] == "header_note"
     assert by_id[6]["block_type"] == "paragraph"
+    assert by_id[7]["block_type"] == "header_note"
 
 
 def test_outline_promotes_known_divider_titles_to_section() -> None:

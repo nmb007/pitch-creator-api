@@ -401,6 +401,7 @@ def _unique_ints(values: list[int]) -> list[int]:
 # Template / legend lines. Never treat these as section dividers.
 FAKE_SECTION_LABELS = frozenset(
     {
+        "format",
         "general format",
         "what the company is?",
         "what we did?",

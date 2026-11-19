@@ -38,7 +38,7 @@ together make one wrapped name are both title.
 - header_note: running banners and footers such as Arbisoft Proposal, Edly \
 Proposal, Confidential, valid till, valid until, dates, www.arbisoft.com, \
 edly.io, axim proposals, page number placeholders, and template legend \
-lines such as General Format, What the Company Is?, and What We Did?.
+lines such as Format, General Format, What the Company Is?, and What We Did?.
 - heading: a field label such as The Challenge, The Approach, The Outcome, \
 Background, Challenges, Solutions, Solution, Technology Stack, Tech Stack. \
 Set field to exactly one of background, challenge, approach, solution, \
