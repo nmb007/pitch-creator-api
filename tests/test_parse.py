@@ -217,6 +217,7 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
             "Design Case Study: View Our Design Case Studies here",
             "paragraph",
         ),
+        9: TextBlock(9, 50, "Arbisoft Case Study for Zain Cash", "paragraph"),
     }
     labeled = outline_from_payload(
         {
@@ -239,10 +240,11 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
                 {"block_id": 6, "block_type": "paragraph", "field": "", "children": []},
                 {"block_id": 7, "block_type": "section", "field": "", "children": []},
                 {"block_id": 8, "block_type": "title", "field": "", "children": []},
+                {"block_id": 9, "block_type": "section", "field": "", "children": []},
             ]
         },
         blocks,
-        batch_numbers={1, 2, 3, 4, 5, 6, 7, 8},
+        batch_numbers={1, 2, 3, 4, 5, 6, 7, 8, 9},
     )
     by_id = {item["block_id"]: item for item in labeled}
     assert by_id[1]["block_type"] == "section"
@@ -252,7 +254,9 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
     assert by_id[6]["block_type"] == "paragraph"
     assert by_id[7]["block_type"] == "header_note"
     assert by_id[8]["block_type"] == "header_note"
+    assert by_id[9]["block_type"] == "header_note"
     assert is_banner("Design Case Study: View Our Design Case Studies here")
+    assert is_banner("Arbisoft Case Study for Zain Cash")
 
 
 def test_outline_promotes_known_divider_titles_to_section() -> None:

@@ -401,6 +401,7 @@ def _unique_ints(values: list[int]) -> list[int]:
 # Template, legend, and promo lines. Never study titles or section dividers.
 NON_CONTENT_LABELS = frozenset(
     {
+        "arbisoft case study for zain cash",
         "design case study: view our design case studies here",
         "format",
         "general format",
@@ -419,7 +420,6 @@ _SECTION_HEADER_BANNERS = frozenset(
         "arbisoft e-commerce case studies",
         "arbisoft case studies for humanitarian and nonprofit organizations",
         "arbisoft case studies for non-profit organizations",
-        "arbisoft case study for zain cash",
         "broader it solutions for non-profit organisations",
         "content management system (cms)",
         "cross platform app case studies",
