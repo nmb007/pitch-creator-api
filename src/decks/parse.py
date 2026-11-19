@@ -26,6 +26,7 @@ from src.decks.validate import (
     StructureValidationError,
     draft_from_labeled_span,
     is_banner,
+    is_section_header,
     outline_from_payload,
 )
 
@@ -266,8 +267,26 @@ def _drafts_from_labeled(
                 break
             title_numbers.append(next_id)
             look += 1
+            joined = " ".join(
+                blocks_by_number[n].text.strip() for n in title_numbers
+            ).strip()
+            # Stop once wrapped lines form a known section divider.
+            if is_section_header(joined):
+                break
         title = " ".join(blocks_by_number[n].text.strip() for n in title_numbers).strip()
         if not title:
+            index = look
+            continue
+        # Wrapped divider lines (e.g. Travel / (General+ / Global Distribution
+        # Systems)) must become the section name, not a fake study title.
+        if is_section_header(title):
+            section = title
+            if log_id is not None:
+                ingest_info(
+                    log_id,
+                    IngestPhase.OUTLINE,
+                    f'found section "{section}" from joined title blocks.',
+                )
             index = look
             continue
 

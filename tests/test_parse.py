@@ -243,6 +243,95 @@ def test_outline_demotes_fake_section_and_promotes_cover() -> None:
     assert by_id[6]["block_type"] == "paragraph"
 
 
+def test_outline_promotes_known_divider_titles_to_section() -> None:
+    for text in (
+        "ERP, Dashboards, and Reporting Solutions for Non-profit Organisations",
+        "AI-powered training content support platforms",
+        "Axim Proposals",
+        "Content Management System  (CMS)",
+        "Cross platform App Case Studies",
+        "Data Scraping",
+        "Design (Nurture)",
+        "Ecommerce",
+        "Fintech Design",
+        "Healthcare",
+        "Instructional Design (Content Management, Development & Course Authoring)",
+        "Managed Hosting",
+        "ML/AI",
+        "Mobile App Development",
+        "Multi-Language Support",
+        "Multi-tier training academies (vendor-partner-user training)",
+        "QA",
+        "SaaS",
+        "Web / Mobile App Development (Search interface)",
+    ):
+        blocks = {1: TextBlock(1, 1, text, "paragraph")}
+        labeled = outline_from_payload(
+            {
+                "blocks": [
+                    {"block_id": 1, "block_type": "title", "field": "", "children": []},
+                ]
+            },
+            blocks,
+            batch_numbers={1},
+        )
+        assert labeled[0]["block_type"] == "section", text
+        assert is_banner(text)
+
+
+def test_joined_travel_divider_becomes_section_not_study(tmp_path) -> None:  # noqa: ANN001
+    """Docling can split a divider across lines; joined text must still be a section."""
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    divider = presentation.slides.add_slide(blank)
+    _write(
+        divider,
+        [
+            "Travel",
+            "(General+",
+            "Global Distribution Systems)",
+        ],
+    )
+    study = presentation.slides.add_slide(blank)
+    _write(
+        study,
+        [
+            "Case Study: Optimizing Travel Booking through GDS Integration",
+            "KAYAK needed GDS connectivity.",
+        ],
+    )
+    presentation.save(path)
+
+    def complete(message: str) -> dict[str, Any]:
+        blocks = _block_rows(message)
+        items: list[dict[str, Any]] = []
+        for number, _slide, text in blocks:
+            if text in {
+                "Travel",
+                "(General+",
+                "Global Distribution Systems)",
+                "Case Study: Optimizing Travel Booking through GDS Integration",
+            }:
+                items.append(
+                    {"block_id": number, "block_type": "title", "field": "", "children": []}
+                )
+            elif is_banner(text):
+                items.append(
+                    {"block_id": number, "block_type": "header_note", "field": "", "children": []}
+                )
+            else:
+                items.append(
+                    {"block_id": number, "block_type": "paragraph", "field": "", "children": []}
+                )
+        return {"blocks": items}
+
+    drafts = parse_pptx(path, complete=complete)
+    assert len(drafts) == 1
+    assert drafts[0].title.startswith("Case Study: Optimizing Travel Booking")
+    assert drafts[0].section == "Travel (General+ Global Distribution Systems)"
+
+
 def test_parse_discards_invalid_outline_then_commits(
     tmp_path,  # noqa: ANN001
     monkeypatch: Any,
@@ -773,6 +862,27 @@ def test_section_headers_stay_out_of_raw_text() -> None:
         "Arbisoft Case Studies for Humanitarian and Nonprofit Organizations",
         "Arbisoft Case Studies for Non-Profit Organizations",
         "Arbisoft Case Study for Zain Cash",
+        "Broader IT Solutions for non-profit Organisations",
+        "ERP, Dashboards, and Reporting Solutions for Non-profit Organisations",
+        "AI-powered training content support platforms",
+        "Axim Proposals",
+        "Content Management System  (CMS)",
+        "Cross platform App Case Studies",
+        "Data Scraping",
+        "Design (Nurture)",
+        "Ecommerce",
+        "Fintech Design",
+        "Healthcare",
+        "Instructional Design (Content Management, Development & Course Authoring)",
+        "Managed Hosting",
+        "ML/AI",
+        "Mobile App Development",
+        "Multi-Language Support",
+        "Multi-tier training academies (vendor-partner-user training)",
+        "QA",
+        "SaaS",
+        "Travel (General+ Global Distribution Systems)",
+        "Web / Mobile App Development (Search interface)",
         "Edly Instructional Design "
         "(Content Management, Development & Course Authoring) Case Studies",
         "Edly Case Studies",

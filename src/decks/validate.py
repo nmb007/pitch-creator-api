@@ -368,6 +368,11 @@ def is_banner(text: str) -> bool:
     return _is_banner(text)
 
 
+def is_section_header(text: str) -> bool:
+    """True when text is a known cover/category divider (exact label match)."""
+    return _normalize_label(text) in _SECTION_HEADER_BANNERS
+
+
 def _int_list(value: Any, label: str) -> list[int]:
     if value is None:
         return []
@@ -411,6 +416,27 @@ _SECTION_HEADER_BANNERS = frozenset(
         "arbisoft case studies for humanitarian and nonprofit organizations",
         "arbisoft case studies for non-profit organizations",
         "arbisoft case study for zain cash",
+        "broader it solutions for non-profit organisations",
+        "content management system (cms)",
+        "cross platform app case studies",
+        "data scraping",
+        "erp, dashboards, and reporting solutions for non-profit organisations",
+        "ai-powered training content support platforms",
+        "axim proposals",
+        "design (nurture)",
+        "ecommerce",
+        "fintech design",
+        "healthcare",
+        "instructional design (content management, development & course authoring)",
+        "managed hosting",
+        "ml/ai",
+        "mobile app development",
+        "multi-language support",
+        "multi-tier training academies (vendor-partner-user training)",
+        "qa",
+        "saas",
+        "travel (general+ global distribution systems)",
+        "web / mobile app development (search interface)",
         "edly instructional design "
         "(content management, development & course authoring) case studies",
         "edly case studies",
@@ -448,7 +474,6 @@ def _is_banner(text: str) -> bool:
             "www.arbisoft.com",
             "www.edly.io",
             "confidential",
-            "axim proposals",
             "edly.io",
         }
         or lowered in _SECTION_HEADER_BANNERS
