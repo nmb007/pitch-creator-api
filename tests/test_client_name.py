@@ -1,6 +1,6 @@
 """Client names stay only when the study blocks already say that name."""
 
-from src.decks.client_name import accept_client_name
+from src.decks.client_name import accept_client_name, infer_client_name
 
 
 def test_stores_name_the_study_already_says() -> None:
@@ -17,6 +17,24 @@ def test_drops_name_the_study_does_not_say() -> None:
         "Philanthropy University",
         "Expanding Access to Education for Global Social Impact\n"
         "The work expanded access to education.",
+    )
+    assert name is None
+
+
+def test_infer_client_from_possessive_title() -> None:
+    name = infer_client_name(
+        "Driving Global Science Education with Harvard’s LabXchange",
+        "Driving Global Science Education with Harvard’s LabXchange\n"
+        "Harvard led the LabXchange science platform.",
+    )
+    assert name == "Harvard"
+
+
+def test_infer_client_empty_when_only_the_client() -> None:
+    name = infer_client_name(
+        "Enhancing Retail Analytics with Advanced Data Services",
+        "Enhancing Retail Analytics with Advanced Data Services\n"
+        "The client needed to extract retail data from many websites.",
     )
     assert name is None
 

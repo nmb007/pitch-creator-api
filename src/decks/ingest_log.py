@@ -14,6 +14,8 @@ _RESET = "\033[0m"
 
 class IngestPhase(StrEnum):
     READ = "read"
+    OUTLINE = "outline"
+    # Older log lines; keep so existing tests and greps still resolve.
     TITLES = "titles"
     FIELDS = "fields"
     PERSIST = "persist"
@@ -25,6 +27,7 @@ class IngestPhase(StrEnum):
 
 _PHASE_COLOR: dict[IngestPhase, str] = {
     IngestPhase.READ: "\033[36m",
+    IngestPhase.OUTLINE: "\033[33m",
     IngestPhase.TITLES: "\033[33m",
     IngestPhase.FIELDS: "\033[35m",
     IngestPhase.PERSIST: "\033[34m",

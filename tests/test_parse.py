@@ -1,15 +1,36 @@
-"""Title-span ingest with a fake model produces study drafts."""
+"""Outline ingest with a fake model produces study drafts."""
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
+from uuid import uuid4
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from src.decks.blocks import TextBlock, read_pptx_blocks
 from src.decks.parse import parse_pptx
-from src.decks.validate import build_raw_text, is_banner, titles_from_payload
+from src.decks.validate import (
+    StructureValidationError,
+    build_raw_text,
+    is_banner,
+    outline_from_payload,
+)
+
+_HEADINGS = {
+    "the challenge": "challenge",
+    "challenges": "challenge",
+    "the approach": "approach",
+    "background": "background",
+    "the outcome": "outcome",
+    "outcome": "outcome",
+    "solution": "solution",
+    "solutions": "solution",
+    "technology stack": "tech_stack",
+    "the technology stack": "tech_stack",
+    "tech stack": "tech_stack",
+}
 
 
 def test_period_ending_slide_continues_until_next_title(tmp_path) -> None:  # noqa: ANN001
@@ -38,19 +59,15 @@ def test_period_ending_slide_continues_until_next_title(tmp_path) -> None:  # no
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                _title(blocks, "Elevating KAYAK's Mobile Experience in Travel Tech"),
-                _title(blocks, "Enabling In-Office 3D Printing for Orthodontics"),
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Elevating KAYAK's Mobile Experience in Travel Tech",
+                "Enabling In-Office 3D Printing for Orthodontics",
+            }
+        ),
+    )
     assert [draft.title for draft in drafts] == [
         "Elevating KAYAK's Mobile Experience in Travel Tech",
         "Enabling In-Office 3D Printing for Orthodontics",
@@ -62,6 +79,7 @@ def test_period_ending_slide_continues_until_next_title(tmp_path) -> None:  # no
     assert "Arbisoft Proposal" not in kayak.raw_text
     assert "Braces on Demand" not in kayak.raw_text
     assert kayak.slide_numbers == [1, 2]
+    assert kayak.client_name == "KAYAK"
 
 
 def test_lowercase_line_stays_in_open_study(tmp_path) -> None:  # noqa: ANN001
@@ -73,6 +91,7 @@ def test_lowercase_line_stays_in_open_study(tmp_path) -> None:  # noqa: ANN001
         first,
         [
             "Elevating KAYAK's Mobile Experience",
+            "The Approach",
             "KAYAK needed a faster mobile app.",
         ],
     )
@@ -87,21 +106,18 @@ def test_lowercase_line_stays_in_open_study(tmp_path) -> None:  # noqa: ANN001
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                _title(blocks, "Elevating KAYAK's Mobile Experience"),
-                _title(blocks, "Next Study Title About Orthodontics"),
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Elevating KAYAK's Mobile Experience",
+                "Next Study Title About Orthodontics",
+            }
+        ),
+    )
     assert len(drafts) == 2
     assert "learning, and test automation" in drafts[0].raw_text
+    assert "learning, and test automation" in drafts[0].approach
     assert "learning, and test automation" not in drafts[1].raw_text
 
 
@@ -120,19 +136,15 @@ def test_two_titles_on_one_slide(tmp_path) -> None:  # noqa: ANN001
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                _title(blocks, "Landit, a career platform, needed a mobile app."),
-                _title(blocks, "Moonbeam, a podcast product, needed recommendations."),
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Landit, a career platform, needed a mobile app.",
+                "Moonbeam, a podcast product, needed recommendations.",
+            }
+        ),
+    )
     assert [draft.title for draft in drafts] == [
         "Landit, a career platform, needed a mobile app.",
         "Moonbeam, a podcast product, needed recommendations.",
@@ -152,94 +164,184 @@ def test_wrapped_title(tmp_path) -> None:  # noqa: ANN001
     presentation.save(path)
 
     def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
+        blocks = _block_rows(message)
         first = _find(blocks, "Enabling Brands With")
         second = _find(blocks, "Real-Time Store-Level Insights")
-        return {
-            "sections": [],
-            "titles": [{"block_numbers": [first, second]}],
-        }
+        return _outline_payload(
+            blocks,
+            title_ids={first, second},
+            section_ids={_find(blocks, "Arbisoft E-commerce Case Studies")},
+        )
 
     drafts = parse_pptx(path, complete=complete)
     assert len(drafts) == 1
     assert drafts[0].title == "Enabling Brands With Real-Time Store-Level Insights"
     assert "Eileen set out" in drafts[0].raw_text
     assert "Arbisoft E-commerce" not in drafts[0].raw_text
+    assert drafts[0].section == "Arbisoft E-commerce Case Studies"
 
 
-def test_non_adjacent_title_pair_splits_into_two_titles() -> None:
+def test_outline_rejects_missing_block_id() -> None:
     blocks = {
-        613: TextBlock(613, 63, "QA Collaboration with edX: A Decade of Innovation", "paragraph"),
-        614: TextBlock(614, 63, "The Challenge", "paragraph"),
-        626: TextBlock(626, 64, "Global Crew Accommodation Solutions Platform", "paragraph"),
+        1: TextBlock(1, 1, "Title One", "paragraph"),
+        2: TextBlock(2, 1, "Body text.", "paragraph"),
     }
+    try:
+        outline_from_payload(
+            {
+                "blocks": [
+                    {"block_id": 1, "block_type": "title"},
+                ]
+            },
+            blocks,
+            batch_numbers={1, 2},
+        )
+    except StructureValidationError as exc:
+        assert "omitted" in str(exc).lower()
+    else:
+        raise AssertionError("expected StructureValidationError")
 
-    _sections, titles, held = titles_from_payload(
-        {"sections": [], "titles": [{"block_numbers": [613, 626]}]},
+
+def test_outline_demotes_fake_section_and_promotes_cover() -> None:
+    blocks = {
+        1: TextBlock(1, 1, "Arbisoft Case Studies", "paragraph"),
+        2: TextBlock(2, 1, "www.arbisoft.com", "paragraph"),
+        3: TextBlock(3, 2, "General Format", "paragraph"),
+        4: TextBlock(4, 2, "What the Company Is?", "paragraph"),
+        5: TextBlock(5, 2, "What We Did?", "paragraph"),
+        6: TextBlock(6, 2, "Covers all industries", "paragraph"),
+    }
+    labeled = outline_from_payload(
+        {
+            "blocks": [
+                {"block_id": 1, "block_type": "header_note", "field": "", "children": []},
+                {"block_id": 2, "block_type": "header_note", "field": "", "children": []},
+                {"block_id": 3, "block_type": "section", "field": "", "children": []},
+                {
+                    "block_id": 4,
+                    "block_type": "heading",
+                    "field": "background",
+                    "children": [],
+                },
+                {
+                    "block_id": 5,
+                    "block_type": "heading",
+                    "field": "approach",
+                    "children": [],
+                },
+                {"block_id": 6, "block_type": "paragraph", "field": "", "children": []},
+            ]
+        },
         blocks,
-        batch_numbers={613, 614, 626},
+        batch_numbers={1, 2, 3, 4, 5, 6},
+    )
+    by_id = {item["block_id"]: item for item in labeled}
+    assert by_id[1]["block_type"] == "section"
+    assert by_id[3]["block_type"] == "header_note"
+    assert by_id[4]["block_type"] == "header_note"
+    assert by_id[5]["block_type"] == "header_note"
+    assert by_id[6]["block_type"] == "paragraph"
+
+
+def test_parse_discards_invalid_outline_then_commits(
+    tmp_path,  # noqa: ANN001
+    monkeypatch: Any,
+) -> None:
+    """Invalid replies must not stay cached; only accepted payloads are committed."""
+    from src.config import settings
+    from src.decks import parse as parse_mod
+
+    monkeypatch.setattr(settings, "STRUCTURE_LLM_RETRY_LIMIT", 1)
+    commits: list[dict[str, Any]] = []
+    discards: list[str] = []
+    monkeypatch.setattr(
+        parse_mod,
+        "commit_outline_cache",
+        lambda message, payload: commits.append(payload),
+    )
+    monkeypatch.setattr(
+        parse_mod,
+        "discard_outline_cache",
+        lambda message: discards.append(message),
     )
 
-    assert held is None
-    assert [item["title"] for item in titles] == [
-        "QA Collaboration with edX: A Decade of Innovation",
-        "Global Crew Accommodation Solutions Platform",
-    ]
-    assert [item["block_numbers"] for item in titles] == [[613], [626]]
-
-
-def test_wrapped_title_hold_across_slides(tmp_path, monkeypatch) -> None:  # noqa: ANN001
-    from src.config import settings
-
-    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 1)
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
-    first = presentation.slides.add_slide(blank)
-    _write(first, ["Enabling Brands With"])
-    second = presentation.slides.add_slide(blank)
+    slide = presentation.slides.add_slide(blank)
+    _write(slide, ["Elevating KAYAK's Mobile Experience", "KAYAK needed a faster app."])
+    presentation.save(path)
+
+    calls = {"n": 0}
+
+    def fake_outline(message: str) -> dict[str, Any]:
+        calls["n"] += 1
+        blocks = _block_rows(message)
+        good = _outline_payload(
+            blocks,
+            title_ids={_find(blocks, "Elevating KAYAK's Mobile Experience")},
+        )
+        if calls["n"] == 1:
+            return {
+                "blocks": [
+                    {
+                        "block_id": 5,
+                        "block_type": "heading",
+                        "field": "challenge",
+                        "children": [],
+                    },
+                    *good["blocks"],
+                ]
+            }
+        return good
+
+    monkeypatch.setattr(parse_mod, "structure_outline", fake_outline)
+    drafts = parse_pptx(path)
+    assert len(drafts) == 1
+    assert calls["n"] == 2
+    assert len(discards) == 1
+    assert len(commits) == 1
+    assert all(item["block_id"] != 5 for item in commits[0]["blocks"])
+
+
+def test_outline_debug_file_written(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    from src.decks import service as deck_service
+
+    storage = tmp_path / "storage"
+    storage.mkdir()
+    monkeypatch.setattr(deck_service, "storage_root", lambda: storage)
+    deck_id = uuid4()
+    (storage / "decks").mkdir()
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    slide = presentation.slides.add_slide(blank)
     _write(
-        second,
+        slide,
         [
-            "Real-Time Store-Level Insights",
-            "Eileen set out to give brands visibility.",
+            "Elevating KAYAK's Mobile Experience",
+            "KAYAK needed a faster mobile app.",
         ],
     )
     presentation.save(path)
-    calls: list[str] = []
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        calls.append(message)
-        blocks = _blocks_from_message(message)
-        if "Held open wrapped title" not in message:
-            first = _find(blocks, "Enabling Brands With")
-            return {
-                "sections": [],
-                "titles": [{"block_numbers": [first], "incomplete": True}],
-            }
-        # Held first line is only in the held JSON; second line is in this batch.
-        held_match = re.search(r'"block_numbers":\s*\[(\d+)\]', message)
-        assert held_match is not None
-        held_first = int(held_match.group(1))
-        second = _find(blocks, "Real-Time Store-Level Insights")
-        return {
-            "sections": [],
-            "titles": [{"block_numbers": [held_first, second]}],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        deck_id=deck_id,
+        complete=_outline_complete(titles={"Elevating KAYAK's Mobile Experience"}),
+    )
     assert len(drafts) == 1
-    assert len(calls) == 2
-    assert "Held open wrapped title" in calls[1]
-    assert drafts[0].title == "Enabling Brands With Real-Time Store-Level Insights"
-    assert "Eileen set out" in drafts[0].raw_text
+    outline_path = storage / "decks" / f"{deck_id}.outline.json"
+    assert outline_path.exists()
+    payload = json.loads(outline_path.read_text())
+    assert payload["deck_id"] == str(deck_id)
+    assert payload["batches"]
+    first = payload["batches"][0]["accepted"][0]
+    assert "block_text" not in first
+    assert "block_id" in first
 
 
-def test_field_text_copied_from_block_numbers(tmp_path) -> None:  # noqa: ANN001
+def test_field_text_copied_from_heading_children(tmp_path) -> None:  # noqa: ANN001
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
@@ -252,44 +354,28 @@ def test_field_text_copied_from_block_numbers(tmp_path) -> None:  # noqa: ANN001
             "KAYAK serves millions of users operating in 30 countries.",
             "Challenges",
             "As KAYAK expanded its services globally, managing travel data became complex.",
+            "Technology Stack",
             "Tech Stack: Python, Django",
         ],
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            blocks = _blocks_from_message(message)
-            return {
-                "client_name": "KAYAK",
-                "background": [_find(blocks, "KAYAK serves millions")],
-                "challenge": [_find(blocks, "managing travel data")],
-                "approach": [],
-                "solution": [],
-                "outcome": [],
-                "tech_stack": [_find(blocks, "Tech Stack: Python")],
-            }
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                _title(
-                    blocks,
-                    "Case Study: Optimizing Travel Booking through GDS Integration",
-                )
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={"Case Study: Optimizing Travel Booking through GDS Integration"}
+        ),
+    )
     assert len(drafts) == 1
     assert drafts[0].background == "KAYAK serves millions of users operating in 30 countries."
     assert "managing travel data" in drafts[0].challenge
     assert drafts[0].tech_stack == "Tech Stack: Python, Django"
     assert drafts[0].client_name == "KAYAK"
     assert "Background" in drafts[0].raw_text
+    assert drafts[0].challenge != "Challenges"
 
 
-def test_client_name_dropped_when_not_in_blocks(tmp_path) -> None:  # noqa: ANN001
+def test_client_name_inferred_from_title(tmp_path) -> None:  # noqa: ANN001
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
@@ -297,31 +383,41 @@ def test_client_name_dropped_when_not_in_blocks(tmp_path) -> None:  # noqa: ANN0
     _write(
         slide,
         [
-            "Expanding Access to Education for Global Social Impact",
-            "The work expanded access to education.",
+            "Driving Global Science Education with Harvard’s LabXchange",
+            "Harvard led the LabXchange science platform.",
         ],
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return {
-                "client_name": "Philanthropy University",
-                "background": [],
-                "challenge": [],
-                "approach": [],
-                "solution": [],
-                "outcome": [],
-                "tech_stack": [],
-            }
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [_title(blocks, "Expanding Access to Education for Global Social Impact")],
-        }
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={"Driving Global Science Education with Harvard’s LabXchange"}
+        ),
+    )
+    assert drafts[0].client_name == "Harvard"
 
-    drafts = parse_pptx(path, complete=complete)
-    assert len(drafts) == 1
+
+def test_client_name_left_empty_when_slide_says_the_client(tmp_path) -> None:  # noqa: ANN001
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    slide = presentation.slides.add_slide(blank)
+    _write(
+        slide,
+        [
+            "Enhancing Retail Analytics with Advanced Data Services",
+            "The client needed to extract retail data from many websites.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={"Enhancing Retail Analytics with Advanced Data Services"}
+        ),
+    )
     assert drafts[0].client_name is None
 
 
@@ -350,43 +446,17 @@ def test_later_duplicate_title_overwrites(tmp_path, monkeypatch) -> None:  # noq
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            blocks = _blocks_from_message(message)
-            if "Later copy" in message:
-                return {
-                    "client_name": "KAYAK",
-                    "background": [_find(blocks, "Later copy body")],
-                    "challenge": [],
-                    "approach": [],
-                    "solution": [],
-                    "outcome": [],
-                    "tech_stack": [],
-                }
-            return {
-                "client_name": "KAYAK",
-                "background": [_find(blocks, "First copy body")],
-                "challenge": [],
-                "approach": [],
-                "solution": [],
-                "outcome": [],
-                "tech_stack": [],
-            }
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [_title(blocks, "Elevating KAYAK's Mobile Experience in Travel Tech")],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(titles={"Elevating KAYAK's Mobile Experience in Travel Tech"}),
+    )
     assert len(drafts) == 1
     assert "Later copy body that remains" in drafts[0].raw_text
     assert "First copy body" not in drafts[0].raw_text
-    assert drafts[0].background == "Later copy body that remains."
     assert drafts[0].slide_numbers == [2]
 
 
-def test_banner_marked_as_title_is_dropped(tmp_path) -> None:  # noqa: ANN001
+def test_banner_marked_as_title_becomes_header_note(tmp_path) -> None:  # noqa: ANN001
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
@@ -401,24 +471,20 @@ def test_banner_marked_as_title_is_dropped(tmp_path) -> None:  # noqa: ANN001
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                _title(blocks, "Arbisoft Proposal for XYZ Ltd"),
-                _title(blocks, "Elevating KAYAK's Mobile Experience"),
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Arbisoft Proposal for XYZ Ltd",
+                "Elevating KAYAK's Mobile Experience",
+            }
+        ),
+    )
     assert len(drafts) == 1
     assert drafts[0].title == "Elevating KAYAK's Mobile Experience"
 
 
-def test_banner_only_title_marks_are_skipped(tmp_path) -> None:  # noqa: ANN001
+def test_banner_only_batch_builds_no_study(tmp_path) -> None:  # noqa: ANN001
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
@@ -426,19 +492,13 @@ def test_banner_only_title_marks_are_skipped(tmp_path) -> None:  # noqa: ANN001
     _write(slide, ["Arbisoft Proposal for XYZ Ltd", "Confidential"])
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        return {
-            "sections": [],
-            "titles": [
-                {"block_numbers": [_find(blocks, "Arbisoft Proposal")]},
-                {"block_numbers": [_find(blocks, "Confidential")]},
-            ],
-        }
-
-    assert parse_pptx(path, complete=complete) == []
+    assert (
+        parse_pptx(
+            path,
+            complete=_outline_complete(titles={"Arbisoft Proposal for XYZ Ltd", "Confidential"}),
+        )
+        == []
+    )
 
 
 def test_section_slide_sets_section(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -460,35 +520,38 @@ def test_section_slide_sets_section(tmp_path, monkeypatch) -> None:  # noqa: ANN
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        if "Elevating KAYAK" not in message:
-            number = _find(blocks, "Mobile App Development")
-            return {
-                "sections": [{"block_number": number}],
-                "titles": [],
-            }
-        return {
-            "sections": [],
-            "titles": [_title(blocks, "Elevating KAYAK's Mobile Experience")],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={"Elevating KAYAK's Mobile Experience"},
+            sections={"Mobile App Development"},
+        ),
+    )
     assert len(drafts) == 1
     assert drafts[0].section == "Mobile App Development"
+    assert drafts[0].slide_numbers == [2]
 
 
-def test_empty_title_window_is_skipped(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+def test_cover_beats_general_format_section(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    """Cover banner becomes the section even when the model marks General Format."""
     from src.config import settings
 
-    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 1)
+    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 2)
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]
-    fmt = presentation.slides.add_slide(blank)
-    _write(fmt, ["General Format", "What the Company Is?", "What We Did?"])
+    cover = presentation.slides.add_slide(blank)
+    _write(cover, ["Arbisoft Case Studies", "www.arbisoft.com"])
+    legend = presentation.slides.add_slide(blank)
+    _write(
+        legend,
+        [
+            "General Format",
+            "What the Company Is?",
+            "What We Did?",
+            "Covers all industries",
+        ],
+    )
     study = presentation.slides.add_slide(blank)
     _write(
         study,
@@ -500,19 +563,122 @@ def test_empty_title_window_is_skipped(tmp_path, monkeypatch) -> None:  # noqa: 
     presentation.save(path)
 
     def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        if "Elevating KAYAK" not in message:
-            return {"sections": [], "titles": []}
-        return {
-            "sections": [],
-            "titles": [_title(blocks, "Elevating KAYAK's Mobile Experience")],
-        }
+        blocks = _block_rows(message)
+        items: list[dict[str, Any]] = []
+        for number, _slide, text in blocks:
+            lowered = text.strip().lower()
+            if text == "Arbisoft Case Studies":
+                items.append(
+                    {"block_id": number, "block_type": "header_note", "field": "", "children": []}
+                )
+            elif text == "General Format":
+                items.append(
+                    {"block_id": number, "block_type": "section", "field": "", "children": []}
+                )
+            elif text == "Elevating KAYAK's Mobile Experience":
+                items.append(
+                    {"block_id": number, "block_type": "title", "field": "", "children": []}
+                )
+            elif lowered in {"what the company is?", "what we did?"}:
+                items.append(
+                    {
+                        "block_id": number,
+                        "block_type": "heading",
+                        "field": "background",
+                        "children": [],
+                    }
+                )
+            elif is_banner(text):
+                items.append(
+                    {"block_id": number, "block_type": "header_note", "field": "", "children": []}
+                )
+            else:
+                items.append(
+                    {"block_id": number, "block_type": "paragraph", "field": "", "children": []}
+                )
+        return {"blocks": items}
 
     drafts = parse_pptx(path, complete=complete)
     assert len(drafts) == 1
+    assert drafts[0].section == "Arbisoft Case Studies"
     assert drafts[0].title == "Elevating KAYAK's Mobile Experience"
+
+
+def test_footer_only_next_slide_dropped_from_slide_numbers(tmp_path, monkeypatch) -> None:  # noqa: ANN001
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "STRUCTURE_BATCH_SLIDES", 1)
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    first = presentation.slides.add_slide(blank)
+    _write(
+        first,
+        [
+            "Analytics and Device Management for Teach the World",
+            "Teach the World needed device analytics.",
+        ],
+    )
+    second = presentation.slides.add_slide(blank)
+    _write(
+        second,
+        [
+            "Arbisoft Case Studies for Non-Profit Organizations",
+            "Confidential",
+        ],
+    )
+    third = presentation.slides.add_slide(blank)
+    _write(
+        third,
+        [
+            "Next Study After Banner",
+            "Next body.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Analytics and Device Management for Teach the World",
+                "Next Study After Banner",
+            },
+            sections={"Arbisoft Case Studies for Non-Profit Organizations"},
+        ),
+    )
+    teach = next(
+        draft for draft in drafts if draft.title.startswith("Analytics and Device Management")
+    )
+    assert teach.slide_numbers == [1]
+
+
+def test_heading_id_not_stored_as_field_text(tmp_path) -> None:  # noqa: ANN001
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    slide = presentation.slides.add_slide(blank)
+    _write(
+        slide,
+        [
+            "Cross-Platform Development and Security Enhancement for Landit",
+            "The Challenge",
+            "Landit needed a mobile app.",
+            "The Outcome",
+            "Landit launched a secure mobile experience.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={"Cross-Platform Development and Security Enhancement for Landit"}
+        ),
+    )
+    assert drafts[0].challenge == "Landit needed a mobile app."
+    assert drafts[0].outcome == "Landit launched a secure mobile experience."
+    assert drafts[0].challenge != "The Challenge"
 
 
 def test_raw_text_drops_title_and_banners(tmp_path) -> None:  # noqa: ANN001
@@ -527,6 +693,9 @@ def test_raw_text_drops_title_and_banners(tmp_path) -> None:  # noqa: ANN001
             "Edly Proposal for Axim Collaborative",
             "Confidential",
             "Proposal valid till December 1, 2026",
+            "Proposal valid  till",
+            "February 13, 2025",
+            "Page ‹#›",
             "Cross-Platform Development and Security Enhancement for Landit",
             "The Challenge",
             "Landit needed a mobile app.",
@@ -547,60 +716,15 @@ def test_raw_text_drops_title_and_banners(tmp_path) -> None:  # noqa: ANN001
     assert "Edly Proposal" not in raw
     assert "Confidential" not in raw
     assert "valid till" not in raw
+    assert "February 13" not in raw
+    assert "Page" not in raw
     assert "Landit needed" in raw
     assert "The Challenge" in raw
     assert "React Native" in raw
     assert "Cross-Platform Development" not in raw
-
-
-def test_out_of_span_field_blocks_ignored(tmp_path) -> None:  # noqa: ANN001
-    path = tmp_path / "deck.pptx"
-    presentation = Presentation()
-    blank = presentation.slide_layouts[6]
-    slide = presentation.slides.add_slide(blank)
-    _write(
-        slide,
-        [
-            "Elevating KAYAK's Mobile Experience in Travel Tech",
-            "KAYAK needed a faster mobile app.",
-            "Enabling In-Office 3D Printing for Orthodontics",
-            "Braces on Demand needed a platform for remote printing.",
-        ],
-    )
-    presentation.save(path)
-
-    braces_block: list[int] = []
-
-    def complete(message: str) -> dict[str, Any]:
-        if _is_field_message(message):
-            blocks = _blocks_from_message(message)
-            if "Elevating KAYAK" in message.split("Blocks:", 1)[0]:
-                # Include a next-study block number; code must ignore it.
-                return {
-                    "client_name": "KAYAK",
-                    "background": [_find(blocks, "KAYAK needed"), braces_block[0]],
-                    "challenge": [],
-                    "approach": [],
-                    "solution": [],
-                    "outcome": [],
-                    "tech_stack": [],
-                }
-            return _fields_for(message)
-        blocks = _blocks_from_message(message)
-        braces_block.clear()
-        braces_block.append(_find(blocks, "Braces on Demand"))
-        return {
-            "sections": [],
-            "titles": [
-                _title(blocks, "Elevating KAYAK's Mobile Experience in Travel Tech"),
-                _title(blocks, "Enabling In-Office 3D Printing for Orthodontics"),
-            ],
-        }
-
-    drafts = parse_pptx(path, complete=complete)
-    assert "Braces on Demand" not in drafts[0].raw_text
-    assert "Braces on Demand" not in drafts[0].background
-    assert drafts[0].background == "KAYAK needed a faster mobile app."
+    assert is_banner("Proposal valid  till")
+    assert is_banner("Proposal Valid Until November 13, 2025")
+    assert is_banner("Page ‹#›")
 
 
 def test_one_chunk_per_filled_field(monkeypatch) -> None:  # noqa: ANN001
@@ -643,44 +767,6 @@ def test_one_chunk_per_filled_field(monkeypatch) -> None:  # noqa: ANN001
     assert [chunk.position for chunk in chunks] == [1, 2, 3, 4, 5, 6]
 
 
-def _is_field_message(message: str) -> bool:
-    return message.startswith("Section:")
-
-
-def _fields_for(message: str) -> dict[str, Any]:
-    """Put every body block into background so drafts still have searchable text."""
-    blocks = _blocks_from_message(message)
-    return {
-        "client_name": "",
-        "background": [number for number, _ in blocks],
-        "challenge": [],
-        "approach": [],
-        "solution": [],
-        "outcome": [],
-        "tech_stack": [],
-    }
-
-
-def _title(blocks: list[tuple[int, str]], text: str) -> dict[str, Any]:
-    return {"block_numbers": [_find(blocks, text)]}
-
-
-def _blocks_from_message(message: str) -> list[tuple[int, str]]:
-    rows: list[tuple[int, str]] = []
-    for line in message.splitlines():
-        match = re.match(r"^(\d+)\. slide=(\d+) text=(.*)$", line)
-        if match:
-            rows.append((int(match.group(1)), line))
-    return rows
-
-
-def _find(blocks: list[tuple[int, str]], needle: str) -> int:
-    for number, line in blocks:
-        if needle in line:
-            return number
-    raise AssertionError(f"Missing block containing {needle!r}")
-
-
 def test_section_headers_stay_out_of_raw_text() -> None:
     headers = (
         "Arbisoft E-commerce Case Studies",
@@ -706,14 +792,89 @@ def test_section_headers_stay_out_of_raw_text() -> None:
         title_block_numbers=[2],
     )
     assert raw == "The team shipped the portal."
-    sections, titles, held = titles_from_payload(
-        {"sections": [{"block_number": 1}], "titles": []},
-        blocks,
-        batch_numbers={1, 2, 3, 4},
-    )
-    assert sections == [{"name": "Edly Case Studies", "block_number": 1}]
-    assert titles == []
-    assert held is None
+
+
+def _outline_complete(
+    *,
+    titles: set[str],
+    sections: set[str] | None = None,
+) -> Any:
+    section_names = sections or set()
+
+    def complete(message: str) -> dict[str, Any]:
+        blocks = _block_rows(message)
+        title_ids: set[int] = set()
+        section_ids: set[int] = set()
+        for number, _slide, text in blocks:
+            if text in titles:
+                title_ids.add(number)
+            if text in section_names:
+                section_ids.add(number)
+        return _outline_payload(blocks, title_ids=title_ids, section_ids=section_ids)
+
+    return complete
+
+
+def _outline_payload(
+    blocks: list[tuple[int, int, str]],
+    *,
+    title_ids: set[int],
+    section_ids: set[int] | None = None,
+) -> dict[str, Any]:
+    section_ids = section_ids or set()
+    nested: set[int] = set()
+    items: list[dict[str, Any]] = []
+    open_heading: dict[str, Any] | None = None
+    for number, _slide, text in blocks:
+        lowered = text.strip().rstrip(":").strip().lower()
+        if number in title_ids:
+            open_heading = None
+            items.append({"block_id": number, "block_type": "title"})
+            continue
+        if number in section_ids:
+            open_heading = None
+            items.append({"block_id": number, "block_type": "section"})
+            continue
+        if is_banner(text):
+            items.append({"block_id": number, "block_type": "header_note"})
+            continue
+        if lowered in _HEADINGS:
+            entry = {
+                "block_id": number,
+                "block_type": "heading",
+                "field": _HEADINGS[lowered],
+                "children": [],
+            }
+            items.append(entry)
+            open_heading = entry
+            continue
+        if text.lower().startswith("tech stack:"):
+            if open_heading is not None and open_heading.get("field") == "tech_stack":
+                open_heading["children"].append(number)
+                nested.add(number)
+            items.append({"block_id": number, "block_type": "paragraph"})
+            continue
+        if open_heading is not None:
+            open_heading["children"].append(number)
+            nested.add(number)
+        items.append({"block_id": number, "block_type": "paragraph"})
+    return {"blocks": items}
+
+
+def _block_rows(message: str) -> list[tuple[int, int, str]]:
+    rows: list[tuple[int, int, str]] = []
+    for line in message.splitlines():
+        match = re.match(r"^(\d+)\. slide=(\d+) text=(.*)$", line)
+        if match:
+            rows.append((int(match.group(1)), int(match.group(2)), match.group(3)))
+    return rows
+
+
+def _find(blocks: list[tuple[int, int, str]], needle: str) -> int:
+    for number, _slide, text in blocks:
+        if needle in text:
+            return number
+    raise AssertionError(f"Missing block containing {needle!r}")
 
 
 def _write(slide, lines: list[str]) -> None:  # noqa: ANN001

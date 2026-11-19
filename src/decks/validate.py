@@ -1,4 +1,4 @@
-"""Accept title anchors and field block numbers against Docling blocks."""
+"""Accept outline labels and build study drafts from Docling blocks."""
 
 from __future__ import annotations
 
@@ -8,10 +8,12 @@ from typing import Any
 
 from src.decks.blocks import SlideBlocks, TextBlock
 from src.decks.drafts import FIELD_NAMES, StudyDraft
+from src.decks.structure_model import BLOCK_TYPES
 
 logger = logging.getLogger(__name__)
 
 _EMPTY_NAMES = {"none", "null", "n/a", "na", "unknown", "unnamed", "not found", ""}
+_FIELD_SET = frozenset(FIELD_NAMES)
 
 DATE_LINE = re.compile(
     r"^(January|February|March|April|May|June|July|August|September|"
@@ -19,97 +21,213 @@ DATE_LINE = re.compile(
     re.IGNORECASE,
 )
 
+PAGE_LINE = re.compile(r"^page\s*[‹<]?#?[›>]?$", re.IGNORECASE)
+
+# Possessive client in a title: "Harvard's LabXchange", "Audacy's Hybrid".
+_POSSESSIVE = re.compile(
+    r"\b([A-Z][\w.&]+)['’]s\b",
+)
+# Prefer explicit vendor/client phrasing over bare "for" / "with".
+_TITLE_ROLE = re.compile(
+    r"(?i)\b(?:partnered with|led by)\s+"
+    r"([A-Z][\w.&]*(?:\s+[A-Z][\w.&]*){0,5})",
+)
+# Body often opens with the client: "KAYAK serves…", "Landit needed…".
+_BODY_LEAD = re.compile(
+    r"\b([A-Z][\w.&]{1,40})\s+(?:serves|needed|set out|aimed|partnered)\b",
+)
+_GENERIC_CLIENT = frozenset(
+    {
+        "the client",
+        "client",
+        "advanced data services",
+        "global social impact",
+        "scalable",
+    }
+)
+
 
 class StructureValidationError(ValueError):
     """Model output does not match the blocks. Fail the whole import."""
 
 
-def titles_from_payload(
+def outline_from_payload(
     payload: dict[str, Any],
     blocks_by_number: dict[int, TextBlock],
     *,
     batch_numbers: set[int],
-    allowed_extra: set[int] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
-    """Return accepted sections, accepted titles, and an optional held wrap title."""
-    sections_raw = payload.get("sections")
-    titles_raw = payload.get("titles")
-    if not isinstance(sections_raw, list):
-        raise StructureValidationError("JSON sections must be a list")
-    if not isinstance(titles_raw, list):
-        raise StructureValidationError("JSON titles must be a list")
+) -> list[dict[str, Any]]:
+    """Validate outline JSON. Every batch block id must appear exactly once."""
+    if not isinstance(payload, dict):
+        raise StructureValidationError("Outline JSON must be an object")
+    raw_blocks = payload.get("blocks")
+    if not isinstance(raw_blocks, list):
+        raise StructureValidationError("Outline blocks must be a list")
 
-    allowed = set(batch_numbers) | (allowed_extra or set())
-    sections: list[dict[str, Any]] = []
-    for item in sections_raw:
-        section = _accept_section(item, blocks_by_number)
-        if section is not None:
-            sections.append(section)
-
-    titles: list[dict[str, Any]] = []
-    held: dict[str, Any] | None = None
-    for item in titles_raw:
+    seen: set[int] = set()
+    labeled: list[dict[str, Any]] = []
+    for item in raw_blocks:
         if not isinstance(item, dict):
-            raise StructureValidationError("Each title must be an object")
-        accepted, partial = _accept_title(
-            item,
-            blocks_by_number,
-            allowed_numbers=allowed,
-            batch_numbers=batch_numbers,
+            raise StructureValidationError("Each outline block must be an object")
+        try:
+            block_id = int(item.get("block_id"))
+        except (TypeError, ValueError) as exc:
+            raise StructureValidationError("block_id must be an integer") from exc
+        if block_id not in batch_numbers:
+            raise StructureValidationError(
+                f"Outline references block {block_id} outside the current batch"
+            )
+        if block_id in seen:
+            raise StructureValidationError(f"Outline repeats block {block_id}")
+        if block_id not in blocks_by_number:
+            raise StructureValidationError(f"Outline references unknown block {block_id}")
+        seen.add(block_id)
+
+        block_type = str(item.get("block_type") or "").strip()
+        if block_type not in BLOCK_TYPES:
+            raise StructureValidationError(
+                f"Unknown block_type {block_type!r} for block {block_id}"
+            )
+        block_type = _normalize_outline_type(
+            block_type,
+            blocks_by_number[block_id].text,
         )
-        if accepted:
-            titles.extend(accepted)
-            # A completed title ends a previous wrap hold; a new trailing
-            # partial later in this loop may set held again.
-            held = None
-        elif partial is not None:
-            held = partial
-    return sections, titles, held
+
+        field = str(item.get("field") or "").strip()
+        if field and field not in _FIELD_SET:
+            raise StructureValidationError(f"Unknown field {field!r} for block {block_id}")
+        if block_type != "heading":
+            field = ""
+
+        children = _unique_ints(_int_list(item.get("children"), "children"))
+        if block_type != "heading":
+            children = []
+        for child in children:
+            if child not in batch_numbers:
+                raise StructureValidationError(
+                    f"Heading {block_id} child {child} is outside the current batch"
+                )
+            if child not in blocks_by_number:
+                raise StructureValidationError(f"Heading {block_id} child {child} is unknown")
+            if _is_banner(blocks_by_number[child].text):
+                raise StructureValidationError(f"Heading {block_id} child {child} is a banner")
+
+        labeled.append(
+            {
+                "block_id": block_id,
+                "block_type": block_type,
+                "field": field,
+                "children": children,
+            }
+        )
+
+    missing = sorted(batch_numbers - seen)
+    if missing:
+        raise StructureValidationError(f"Outline omitted block id(s): {missing}")
+
+    # Children must also appear as top-level paragraph entries with matching ids.
+    child_ids = {
+        child for item in labeled if item["block_type"] == "heading" for child in item["children"]
+    }
+    by_id = {item["block_id"]: item for item in labeled}
+    for child in child_ids:
+        entry = by_id.get(child)
+        if entry is None:
+            raise StructureValidationError(
+                f"Heading child {child} is missing from the outline list"
+            )
+        if entry["block_type"] not in {"paragraph", "header_note"}:
+            # Force nested body lines to paragraph when the model nested them.
+            if entry["block_type"] == "heading":
+                raise StructureValidationError(f"Heading child {child} cannot be another heading")
+            entry["block_type"] = "paragraph"
+            entry["field"] = ""
+            entry["children"] = []
+        elif entry["block_type"] == "header_note":
+            raise StructureValidationError(f"Heading child {child} is a banner")
+
+    labeled.sort(key=lambda item: item["block_id"])
+    return labeled
 
 
-def apply_fields_payload(
-    payload: dict[str, Any],
+def draft_from_labeled_span(
     *,
     title: str,
     section: str,
     title_block_numbers: list[int],
-    span_numbers: list[int],
+    span_items: list[dict[str, Any]],
     blocks_by_number: dict[int, TextBlock],
     slides_by_number: dict[int, SlideBlocks],
 ) -> StudyDraft:
-    """Copy field text from Docling using the block numbers the model returned."""
-    if not isinstance(payload, dict):
-        raise StructureValidationError("Field JSON must be an object")
-    span_set = set(span_numbers)
+    """Copy Docling text into fields from labeled blocks in one study span."""
+    field_ids: dict[str, list[int]] = {name: [] for name in FIELD_NAMES}
+    raw_numbers: list[int] = []
+    open_field: str | None = None
+
+    for item in span_items:
+        block_id = int(item["block_id"])
+        block_type = str(item["block_type"])
+        if block_type in {"title", "section", "header_note"}:
+            continue
+        if block_type == "heading":
+            raw_numbers.append(block_id)
+            field = str(item.get("field") or "")
+            open_field = field if field in _FIELD_SET else None
+            for child in item.get("children") or []:
+                child_id = int(child)
+                if child_id in blocks_by_number and not _is_banner(blocks_by_number[child_id].text):
+                    raw_numbers.append(child_id)
+                    if open_field is not None:
+                        field_ids[open_field].append(child_id)
+            continue
+        if block_type == "paragraph":
+            # Nested children are also listed as top-level paragraphs; skip
+            # duplicates already taken from a heading's children list.
+            if raw_numbers and raw_numbers[-1] == block_id:
+                continue
+            if any(block_id in ids for ids in field_ids.values()):
+                if block_id not in raw_numbers:
+                    raw_numbers.append(block_id)
+                continue
+            raw_numbers.append(block_id)
+            if open_field is not None:
+                field_ids[open_field].append(block_id)
+
+    # Preserve reading order and uniqueness for raw_text.
+    seen_raw: set[int] = set()
+    ordered_raw: list[int] = []
+    for number in raw_numbers:
+        if number in seen_raw:
+            continue
+        seen_raw.add(number)
+        ordered_raw.append(number)
+
     fields: dict[str, str] = {}
     for name in FIELD_NAMES:
-        numbers = _int_list(payload.get(name), name)
-        kept = [n for n in _unique_ints(numbers) if n in span_set and n in blocks_by_number]
-        ignored = [n for n in numbers if n not in span_set]
-        if ignored:
-            logger.warning(
-                "Ignoring out-of-span %s block(s) %s for %r",
-                name,
-                ignored,
-                title,
-            )
+        kept = _unique_ints(field_ids[name])
         fields[name] = "\n".join(
             blocks_by_number[n].text.strip()
             for n in kept
-            if blocks_by_number[n].text.strip()
+            if n in blocks_by_number
+            and blocks_by_number[n].text.strip()
+            and not _is_banner(blocks_by_number[n].text)
         )
+
     raw_text = build_raw_text(
-        span_numbers,
+        ordered_raw,
         title,
         blocks_by_number,
         title_block_numbers=title_block_numbers,
     )
-    slide_numbers = sorted(
-        {
-            blocks_by_number[n].slide
-            for n in span_numbers
-            if n in blocks_by_number
-        }
+    slide_numbers = study_slide_numbers(
+        title_block_numbers=title_block_numbers,
+        body_block_numbers=[
+            n
+            for n in ordered_raw
+            if n in blocks_by_number and not _is_banner(blocks_by_number[n].text)
+        ],
+        blocks_by_number=blocks_by_number,
+        span_items=span_items,
     )
     images = []
     for number in slide_numbers:
@@ -117,12 +235,15 @@ def apply_fields_payload(
         if slide is not None:
             images.extend(slide.images)
     source = "\n".join(
-        blocks_by_number[n].text for n in span_numbers if n in blocks_by_number
+        [
+            title,
+            *(blocks_by_number[n].text for n in ordered_raw if n in blocks_by_number),
+        ]
     )
     return StudyDraft(
         section=section or "General",
         title=title,
-        client_name=accept_client_name(str(payload.get("client_name") or ""), source),
+        client_name=infer_client_name(title, source),
         raw_text=raw_text,
         background=fields["background"],
         challenge=fields["challenge"],
@@ -133,6 +254,47 @@ def apply_fields_payload(
         slide_numbers=slide_numbers,
         images=images,
     )
+
+
+def study_slide_numbers(
+    *,
+    title_block_numbers: list[int],
+    body_block_numbers: list[int],
+    blocks_by_number: dict[int, TextBlock],
+    span_items: list[dict[str, Any]],
+) -> list[int]:
+    """Slides that hold the title or a real body paragraph. Not footer-only."""
+    keep: set[int] = set()
+    for number in title_block_numbers:
+        block = blocks_by_number.get(number)
+        if block is not None:
+            keep.add(block.slide)
+    for number in body_block_numbers:
+        block = blocks_by_number.get(number)
+        if block is None or _is_banner(block.text):
+            continue
+        # Headings count as study content for slide membership.
+        keep.add(block.slide)
+    # A slide that is only a section divider inside the span is excluded.
+    section_only_slides: set[int] = set()
+    for item in span_items:
+        block = blocks_by_number.get(int(item["block_id"]))
+        if block is None:
+            continue
+        if item["block_type"] == "section":
+            section_only_slides.add(block.slide)
+    for slide in list(section_only_slides):
+        has_other = False
+        for item in span_items:
+            block = blocks_by_number.get(int(item["block_id"]))
+            if block is None or block.slide != slide:
+                continue
+            if item["block_type"] not in {"section", "header_note"}:
+                has_other = True
+                break
+        if not has_other:
+            keep.discard(slide)
+    return sorted(keep)
 
 
 def build_raw_text(
@@ -172,115 +334,38 @@ def accept_client_name(reply: str, source: str) -> str | None:
     return line
 
 
+def infer_client_name(title: str, source: str) -> str | None:
+    """Pick a client already written in the title or body. Never invent one."""
+    candidates: list[str] = []
+    for match in _POSSESSIVE.finditer(title):
+        candidates.append(match.group(1).strip())
+    for match in _TITLE_ROLE.finditer(title):
+        candidates.append(match.group(1).strip().rstrip(".,:;"))
+    # "Case Study: Acme Corp - …" — take a short name before a dash, not a slogan.
+    if re.match(r"(?i)^case study:", title):
+        after = title.split(":", 1)[1].strip()
+        piece = re.split(r"\s+[-–—]\s+", after, maxsplit=1)[0].strip()
+        if (
+            piece
+            and len(piece.split()) <= 4
+            and not piece.lower().startswith(
+                ("optimizing", "enhancing", "building", "transforming", "how ")
+            )
+        ):
+            candidates.append(piece)
+    for match in _BODY_LEAD.finditer(source):
+        candidates.append(match.group(1).strip())
+    for name in candidates:
+        if name.lower() in _GENERIC_CLIENT:
+            continue
+        accepted = accept_client_name(name, source)
+        if accepted is not None:
+            return accepted
+    return None
+
+
 def is_banner(text: str) -> bool:
     return _is_banner(text)
-
-
-def _accept_section(
-    item: Any,
-    blocks_by_number: dict[int, TextBlock],
-) -> dict[str, Any] | None:
-    if not isinstance(item, dict):
-        raise StructureValidationError("Each section must be an object")
-    try:
-        number = int(item.get("block_number"))
-    except (TypeError, ValueError) as exc:
-        raise StructureValidationError("section block_number must be an integer") from exc
-    block = blocks_by_number.get(number)
-    if block is None:
-        logger.warning("Skipping section; unknown block %s", number)
-        return None
-    if _is_banner(block.text) and block.text.strip().lower() not in _SECTION_HEADER_BANNERS:
-        logger.warning("Skipping section; block %s is a banner", number)
-        return None
-    name = block.text.strip()
-    if not name:
-        logger.warning("Skipping section; block %s is empty", number)
-        return None
-    return {"name": name, "block_number": number}
-
-
-def _accept_title(
-    item: dict[str, Any],
-    blocks_by_number: dict[int, TextBlock],
-    *,
-    allowed_numbers: set[int],
-    batch_numbers: set[int],
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
-    numbers = _unique_ints(_int_list(item.get("block_numbers"), "block_numbers"))
-    if not numbers:
-        logger.warning("Skipping a title with no block_numbers")
-        return [], None
-    if len(numbers) > 2:
-        logger.warning("Skipping title; expected 1 or 2 block_numbers, got %s", numbers)
-        return [], None
-    for number in numbers:
-        if number not in blocks_by_number:
-            raise StructureValidationError(
-                f"Title references unknown block {number}"
-            )
-        if number not in allowed_numbers:
-            logger.warning(
-                "Skipping title; block %s is outside the current window",
-                number,
-            )
-            return [], None
-    if len(numbers) == 2 and not _blocks_are_adjacent(numbers, blocks_by_number):
-        logger.warning("Splitting title; block_numbers %s are not adjacent", numbers)
-        return _split_title(numbers, blocks_by_number), None
-    if any(_is_banner(blocks_by_number[n].text) for n in numbers):
-        logger.warning("Skipping title; marked banner block(s) %s", numbers)
-        return [], None
-
-    incomplete = bool(item.get("incomplete"))
-    # First line of a wrapped title; second line is on a later slide.
-    if incomplete and len(numbers) == 1 and numbers[0] in batch_numbers:
-        return [], {"block_numbers": numbers, "incomplete": True}
-
-    title = _title_from_numbers(numbers, blocks_by_number)
-    if title is None:
-        return [], None
-    return [title], None
-
-
-def _split_title(
-    numbers: list[int],
-    blocks_by_number: dict[int, TextBlock],
-) -> list[dict[str, Any]]:
-    """Two non-adjacent blocks are two headlines, not one wrapped title."""
-    split: list[dict[str, Any]] = []
-    for number in numbers:
-        if _is_banner(blocks_by_number[number].text):
-            logger.warning("Skipping title; marked banner block(s) [%s]", number)
-            continue
-        title = _title_from_numbers([number], blocks_by_number)
-        if title is not None:
-            split.append(title)
-    return split
-
-
-def _title_from_numbers(
-    numbers: list[int],
-    blocks_by_number: dict[int, TextBlock],
-) -> dict[str, Any] | None:
-    title = " ".join(blocks_by_number[n].text.strip() for n in numbers).strip()
-    if not title:
-        logger.warning("Skipping title; block(s) %s are empty", numbers)
-        return None
-    return {"title": title, "block_numbers": numbers}
-
-
-def _blocks_are_adjacent(
-    numbers: list[int],
-    blocks_by_number: dict[int, TextBlock],
-) -> bool:
-    ordered = sorted(blocks_by_number)
-    try:
-        first = ordered.index(numbers[0])
-        second = ordered.index(numbers[1])
-    except ValueError:
-        return False
-    return second == first + 1
 
 
 def _int_list(value: Any, label: str) -> list[int]:
@@ -308,10 +393,20 @@ def _unique_ints(values: list[int]) -> list[int]:
     return ordered
 
 
-# These lines are also real section dividers. raw_text leaves them out, and a
-# marked section divider with this text is still accepted.
+# Template / legend lines. Never treat these as section dividers.
+FAKE_SECTION_LABELS = frozenset(
+    {
+        "general format",
+        "what the company is?",
+        "what we did?",
+    }
+)
+
+# Cover and category dividers. Always section, even when the model says otherwise.
+# Also banners so they stay out of study raw_text.
 _SECTION_HEADER_BANNERS = frozenset(
     {
+        "arbisoft case studies",
         "arbisoft e-commerce case studies",
         "arbisoft case studies for humanitarian and nonprofit organizations",
         "arbisoft case studies for non-profit organizations",
@@ -323,23 +418,51 @@ _SECTION_HEADER_BANNERS = frozenset(
 )
 
 
+def _normalize_label(text: str) -> str:
+    return " ".join(text.split()).lower()
+
+
+def _normalize_outline_type(block_type: str, text: str) -> str:
+    """Force known cover dividers and reject fake template sections."""
+    lowered = _normalize_label(text)
+    if lowered in FAKE_SECTION_LABELS:
+        return "header_note"
+    if lowered in _SECTION_HEADER_BANNERS:
+        return "section"
+    # Other banners are header notes unless already typed as a real section
+    # (for example "Mobile App Development" is not in the cover list).
+    if _is_banner(text) and block_type != "section":
+        return "header_note"
+    return block_type
+
+
 def _is_banner(text: str) -> bool:
     """Running header or footer. These lines are not study body and not raw_text."""
-    lowered = text.strip().lower()
+    collapsed = " ".join(text.split())
+    lowered = collapsed.lower()
     if not lowered:
         return False
-    if lowered in {
-        "www.arbisoft.com",
-        "confidential",
-        "arbisoft case studies",
-        "axim proposals",
-        "edly.io",
-    } or lowered in _SECTION_HEADER_BANNERS:
+    if (
+        lowered
+        in {
+            "www.arbisoft.com",
+            "www.edly.io",
+            "confidential",
+            "axim proposals",
+            "edly.io",
+        }
+        or lowered in _SECTION_HEADER_BANNERS
+        or lowered in FAKE_SECTION_LABELS
+    ):
         return True
     if "edly.io" in lowered:
         return True
     if lowered.startswith("arbisoft proposal") or lowered.startswith("edly proposal"):
         return True
-    if "valid till" in lowered or lowered.startswith("proposal valid"):
+    if "valid till" in lowered or "valid until" in lowered:
         return True
-    return bool(DATE_LINE.match(text.strip()))
+    if lowered.startswith("proposal valid"):
+        return True
+    if PAGE_LINE.match(collapsed):
+        return True
+    return bool(DATE_LINE.match(collapsed))

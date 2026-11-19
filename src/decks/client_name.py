@@ -2,6 +2,6 @@
 
 from __future__ import annotations
 
-from src.decks.validate import accept_client_name
+from src.decks.validate import accept_client_name, infer_client_name
 
-__all__ = ["accept_client_name"]
+__all__ = ["accept_client_name", "infer_client_name"]

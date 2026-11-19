@@ -32,8 +32,13 @@ class _Model:
         self.structured = structured
         self.calls: list[tuple[object, str]] = []
 
-    def with_structured_output(self, schema: object, method: str = "json_mode") -> _Structured:
-        self.calls.append((schema, method))
+    def with_structured_output(
+        self,
+        schema: object,
+        method: str = "json_schema",
+        strict: bool | None = None,
+    ) -> _Structured:
+        self.calls.append((schema, method, strict))
         return self.structured
 
 
@@ -67,7 +72,7 @@ def test_retries_json_validate_failed_once(
     assert payload == REPLY
     assert len(model.structured.messages) == 2
     assert model.structured.messages[0] == model.structured.messages[1]
-    assert model.calls == [(SCHEMA, "json_mode")]
+    assert model.calls == [(SCHEMA, "json_schema", True)]
     assert _retry_clock == [1.0]
 
 

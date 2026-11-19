@@ -1,4 +1,4 @@
-"""Deck structure calls: mark titles, then assign field block numbers."""
+"""Deck structure call: label each Docling block once, then code builds studies."""
 
 from __future__ import annotations
 
@@ -14,174 +14,163 @@ from src.llm import complete_json, model_name_for, provider_for
 
 logger = logging.getLogger(__name__)
 
-TITLE_SYSTEM_PROMPT = """\
-You mark case-study titles and section divider blocks in Arbisoft PowerPoint \
-blocks. Return only block numbers. Do not write title or section text.
+BLOCK_TYPES = ("title", "section", "header_note", "heading", "paragraph")
 
-Title: the short name of one case study. Usually one headline block, or two \
-adjacent blocks when the name wraps onto a second line. Two numbers in one \
-block_numbers list are only those two next-to-each-other lines. Prefer lines \
-that name the work or the client in a headline style. If only the first line \
-of a wrapped title is in this batch, return that one block with incomplete \
-true. Otherwise omit incomplete or set it false. When several case studies \
-are in this batch, emit one titles entry per case study. Do not put two \
-separate headlines in one block_numbers list.
+OUTLINE_SYSTEM_PROMPT = """\
+You label every Docling block in an Arbisoft PowerPoint batch. Return only \
+block ids and types. Do not copy or rewrite block text.
 
-Section: only a short category or divider name that labels the group of \
-studies that follow (for example "Cross platform App Case Studies" or \
-"Mobile App Development"). Before any such divider, the section is General. \
-A section is almost never a full sentence and almost never a Tech Stack line.
+Reply shape (required):
+- One JSON object. Top level must be {"blocks":[...]}, never a bare array.
+- Each item uses keys block_id and block_type (not id, not type).
+- Every input block id under Blocks must appear exactly once in blocks.
+- Never invent block ids. Never return block text. Empty children is [].
+- Label only ids listed under Blocks. Never re-list a Held open heading \
+block_id; that id is from an earlier batch and is not in this batch.
 
-Never put these in titles or sections:
-- body paragraphs (long sentences about the client or the work)
-- headings such as The Challenge, The Approach, The Outcome, Background, \
-Challenges, Technology Stack, Tech Stack
-- format labels such as General Format, What the Company Is?, What We Did?
-- banners and footers such as Arbisoft Proposal, Confidential, valid till, \
-www.arbisoft.com, and dates
-
-When unsure whether a block is a title or a section, leave it out of both \
-lists. Empty titles and empty sections are better than a wrong block.
+block_type values:
+- title: the short name of one case study (headline). Two adjacent lines that \
+together make one wrapped name are both title.
+- section: a short category divider that labels the studies that follow \
+(for example "Arbisoft Case Studies", "Edly Case Studies", \
+"Cross platform App Case Studies", "Mobile App Development", \
+"Ecommerce", "Healthcare", "Managed Hosting").
+- header_note: running banners and footers such as Arbisoft Proposal, Edly \
+Proposal, Confidential, valid till, valid until, dates, www.arbisoft.com, \
+edly.io, axim proposals, page number placeholders, and template legend \
+lines such as General Format, What the Company Is?, and What We Did?.
+- heading: a field label such as The Challenge, The Approach, The Outcome, \
+Background, Challenges, Solutions, Solution, Technology Stack, Tech Stack. \
+Set field to exactly one of background, challenge, approach, solution, \
+outcome, tech_stack when you know which. Leave field empty when unsure. \
+Put the paragraph block ids that belong under this heading in children. \
+Those child paragraphs must also appear as their own paragraph entries. \
+Children must be ids from this batch only.
+- paragraph: body sentences and bullet lines. If a paragraph continues a \
+Held open heading from an earlier slide, label it paragraph with children \
+[]. Do not re-emit the held heading. Code will attach those paragraphs.
 
 Example. Blocks:
-10. slide=3 text=Advancing edX with Arbisoft's Innovation in Online Learning
-11. slide=3 text=edX is a brainchild of MIT and Harvard, is a global leader \
-in online education.
-12. slide=3 text=Tech Stack: Python/Django, React
-13. slide=12 text=Cross platform App Case Studies
-Good reply:
-{"sections":[{"block_number":13}],"titles":[{"block_numbers":[10]}]}
-Bad reply (do not do this): putting block 11 or 12 in sections, or leaving \
-block 10 out of titles.
+10. slide=13 text=Arbisoft Proposal for XYZ Ltd
+11. slide=13 text=Confidential
+12. slide=13 text=Cross-Platform Development for Landit
+13. slide=13 text=The Challenge
+14. slide=13 text=Landit needed a secure mobile app.
+15. slide=13 text=The Approach
+16. slide=13 text=We recommended React Native.
+Good reply (every item includes field and children; use "" and [] when unused):
+{"blocks":[{"block_id":10,"block_type":"header_note","field":"","children":[]},{"block_id":11,"block_type":"header_note","field":"","children":[]},{"block_id":12,"block_type":"title","field":"","children":[]},{"block_id":13,"block_type":"heading","field":"challenge","children":[14]},{"block_id":14,"block_type":"paragraph","field":"","children":[]},{"block_id":15,"block_type":"heading","field":"approach","children":[16]},{"block_id":16,"block_type":"paragraph","field":"","children":[]}]}
+Bad reply (do not do this): a bare array such as \
+[{"id":10,"type":"header_note"},{"id":12,"type":"title"}]
+Bad reply (do not do this): keys named id or type instead of block_id and \
+block_type.
+Bad reply (do not do this): omitting a block id from the input, or inventing \
+a new id.
+Bad reply (do not do this): re-listing a Held open heading block_id that is \
+not under Blocks.
 
-Example. Two studies in one batch:
-20. slide=63 text=QA Collaboration with edX: A Decade of Innovation
-21. slide=63 text=The Challenge
-30. slide=64 text=Global Crew Accommodation Solutions Platform
-Good reply:
-{"sections":[],"titles":[{"block_numbers":[20]},{"block_numbers":[30]}]}
-Bad reply (do not do this): {"sections":[],"titles":[{"block_numbers":[20, 30]}]}
-
-Do not write study body fields. Do not say whether a study continues.
 Return JSON only, matching the required shape.
 """
 
-TITLE_JSON_SCHEMA: dict[str, Any] = {
+# Strict JSON Schema (Groq/OpenAI): every property required, no extras.
+# LangChain needs top-level title as the response-format / function name.
+OUTLINE_JSON_SCHEMA: dict[str, Any] = {
+    "title": "DeckOutline",
     "type": "object",
     "properties": {
-        "sections": {
+        "blocks": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "block_number": {"type": "integer"},
-                },
-                "required": ["block_number"],
-            },
-        },
-        "titles": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "block_numbers": {
+                    "block_id": {"type": "integer"},
+                    "block_type": {"type": "string", "enum": list(BLOCK_TYPES)},
+                    "field": {
+                        "type": "string",
+                        "enum": ["", *FIELD_NAMES],
+                    },
+                    "children": {
                         "type": "array",
                         "items": {"type": "integer"},
                     },
-                    "incomplete": {"type": "boolean"},
                 },
-                "required": ["block_numbers"],
+                "required": ["block_id", "block_type", "field", "children"],
+                "additionalProperties": False,
             },
         },
     },
-    "required": ["sections", "titles"],
-}
-
-FIELD_SYSTEM_PROMPT = """\
-You assign Docling block numbers to case-study fields.
-The title and section are already known. Do not change them.
-For background, challenge, approach, solution, outcome, and tech_stack, \
-return only lists of block numbers from the Blocks list you were given.
-Copy no sentences. Use an empty list when a field has no matching block.
-The client is the organization the work was done for. Arbisoft is the vendor, \
-not the client. If the blocks do not name that organization, client_name is \
-an empty string.
-Return JSON only, matching the required shape.
-"""
-
-FIELD_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "client_name": {"type": "string"},
-        "background": {"type": "array", "items": {"type": "integer"}},
-        "challenge": {"type": "array", "items": {"type": "integer"}},
-        "approach": {"type": "array", "items": {"type": "integer"}},
-        "solution": {"type": "array", "items": {"type": "integer"}},
-        "outcome": {"type": "array", "items": {"type": "integer"}},
-        "tech_stack": {"type": "array", "items": {"type": "integer"}},
-    },
-    "required": ["client_name", *FIELD_NAMES],
+    "required": ["blocks"],
+    "additionalProperties": False,
 }
 
 
-def structure_titles(user_message: str) -> dict[str, Any]:
-    """Ask the structure LLM for section and title anchors. Cache by prompt hash."""
+def structure_outline(user_message: str) -> dict[str, Any]:
+    """Ask the structure LLM to label every block in the batch.
+
+    Reads a prior validated cache entry when present. Does not write the cache;
+    call commit_outline_cache after outline_from_payload succeeds.
+    """
     return _cached_complete(
-        TITLE_SYSTEM_PROMPT,
-        TITLE_JSON_SCHEMA,
+        OUTLINE_SYSTEM_PROMPT,
+        OUTLINE_JSON_SCHEMA,
         user_message,
-        kind="titles",
+        kind="outline",
     )
 
 
-def structure_fields(user_message: str) -> dict[str, Any]:
-    """Ask the structure LLM for field block numbers. Cache by prompt hash."""
-    return _cached_complete(
-        FIELD_SYSTEM_PROMPT,
-        FIELD_JSON_SCHEMA,
-        user_message,
-        kind="fields",
+def commit_outline_cache(user_message: str, payload: dict[str, Any]) -> None:
+    """Persist a validated outline reply so later imports can reuse it."""
+    cache_path = _outline_cache_path(user_message)
+    cache_path.write_text(json.dumps(payload))
+    logger.info(
+        "Structure model (outline): cached %s block(s) (%s…)",
+        len(payload.get("blocks") or []),
+        cache_path.stem[:12],
     )
 
 
-def build_title_message(
+def discard_outline_cache(user_message: str) -> None:
+    """Drop a cached outline reply that failed validation so retries re-call."""
+    cache_path = _outline_cache_path(user_message)
+    if cache_path.exists():
+        cache_path.unlink()
+        logger.info(
+            "Structure model (outline): discarded invalid cache (%s…)",
+            cache_path.stem[:12],
+        )
+
+
+def build_outline_message(
     *,
     section: str,
     blocks: list[tuple[int, int, str]],
-    held_title: dict[str, Any] | None = None,
+    held_heading: dict[str, Any] | None = None,
 ) -> str:
     lines = [f"Current section: {section}", "Blocks:"]
     for number, slide, text in blocks:
         lines.append(f"{number}. slide={slide} text={text}")
-    if held_title is not None:
-        lines.append("Held open wrapped title (complete it or mark another title):")
-        lines.append(json.dumps(held_title, ensure_ascii=False))
+    if held_heading is not None:
+        lines.append(
+            "Held open heading (context only — do not re-list this block_id; "
+            "label continuing body as paragraph):"
+        )
+        lines.append(json.dumps(held_heading, ensure_ascii=False))
     return "\n".join(lines)
 
 
-def build_field_message(
-    *,
-    section: str,
-    title: str,
-    title_block_numbers: list[int],
-    body_blocks: list[tuple[int, int, str]],
-) -> str:
-    title_bits = ", ".join(str(n) for n in title_block_numbers)
-    lines = [
-        f"Section: {section}",
-        f"Title block: {title_bits}. {title}",
-        "Blocks:",
-    ]
-    for number, slide, text in body_blocks:
-        lines.append(f"{number}. slide={slide} text={text}")
-    return "\n".join(lines)
-
-
-# Keep the old names as aliases so any leftover import fails loudly if misused.
-structure_studies = structure_titles
-build_user_message = build_title_message
-SYSTEM_PROMPT = TITLE_SYSTEM_PROMPT
-STUDY_JSON_SCHEMA = TITLE_JSON_SCHEMA
+# Aliases so older imports fail clearly if still used for the wrong shape.
+structure_titles = structure_outline
+structure_fields = structure_outline
+structure_studies = structure_outline
+build_title_message = build_outline_message
+build_field_message = build_outline_message
+build_user_message = build_outline_message
+SYSTEM_PROMPT = OUTLINE_SYSTEM_PROMPT
+TITLE_SYSTEM_PROMPT = OUTLINE_SYSTEM_PROMPT
+FIELD_SYSTEM_PROMPT = OUTLINE_SYSTEM_PROMPT
+TITLE_JSON_SCHEMA = OUTLINE_JSON_SCHEMA
+FIELD_JSON_SCHEMA = OUTLINE_JSON_SCHEMA
+STUDY_JSON_SCHEMA = OUTLINE_JSON_SCHEMA
 
 
 def _cached_complete(
@@ -191,23 +180,16 @@ def _cached_complete(
     *,
     kind: str,
 ) -> dict[str, Any]:
-    provider = provider_for("structure")
-    model = model_name_for("structure")
-    reasoning = settings.STRUCTURE_LLM_REASONING_EFFORT.strip()
-    max_tokens = settings.STRUCTURE_LLM_MAX_TOKENS
-    cache_key = hashlib.sha256(
-        f"{provider}\n{model}\n{reasoning}\n{max_tokens}\n{system_prompt}\n{user_message}".encode()
-    ).hexdigest()
-    cache_path = _cache_dir() / f"{cache_key}.json"
+    cache_path = _cache_path_for(system_prompt, schema, user_message)
     if cache_path.exists():
-        logger.info("Structure model (%s): cache hit (%s…)", kind, cache_key[:12])
+        logger.info("Structure model (%s): cache hit (%s…)", kind, cache_path.stem[:12])
         return json.loads(cache_path.read_text())
     logger.info(
         "Structure model (%s): calling %s/%s (cache miss %s…)",
         kind,
-        provider,
-        model,
-        cache_key[:12],
+        provider_for("structure"),
+        model_name_for("structure"),
+        cache_path.stem[:12],
     )
     payload = complete_json(
         system=system_prompt,
@@ -217,13 +199,34 @@ def _cached_complete(
     )
     if not isinstance(payload, dict):
         raise ValueError("Structure model JSON must be an object")
-    cache_path.write_text(json.dumps(payload))
-    if kind == "titles":
-        title_count = len(payload.get("titles") or [])
-        logger.info("Structure model (titles): got %s title(s) in JSON", title_count)
-    else:
-        logger.info("Structure model (fields): got field block lists")
+    # Do not write here. Invalid replies must not poison retries; parse commits
+    # only after outline_from_payload accepts the payload.
+    block_count = len(payload.get("blocks") or [])
+    logger.info("Structure model (%s): got %s labeled block(s)", kind, block_count)
     return payload
+
+
+def _outline_cache_path(user_message: str) -> Path:
+    return _cache_path_for(OUTLINE_SYSTEM_PROMPT, OUTLINE_JSON_SCHEMA, user_message)
+
+
+def _cache_path_for(
+    system_prompt: str,
+    schema: dict[str, Any],
+    user_message: str,
+) -> Path:
+    provider = provider_for("structure")
+    model = model_name_for("structure")
+    reasoning = settings.STRUCTURE_LLM_REASONING_EFFORT.strip()
+    max_tokens = settings.STRUCTURE_LLM_MAX_TOKENS
+    schema_key = hashlib.sha256(
+        json.dumps(schema, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    cache_key = hashlib.sha256(
+        f"{provider}\n{model}\n{reasoning}\n{max_tokens}\n"
+        f"json_schema_strict\n{schema_key}\n{system_prompt}\n{user_message}".encode()
+    ).hexdigest()
+    return _cache_dir() / f"{cache_key}.json"
 
 
 def _cache_dir() -> Path:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.decks.validate import is_banner
+from src.decks.validate import FAKE_SECTION_LABELS, is_banner
 
 FORBIDDEN_TITLES = frozenset(
     {
@@ -11,12 +11,15 @@ FORBIDDEN_TITLES = frozenset(
         "the outcome",
         "background",
         "challenges",
+        "challenge",
+        "approach",
+        "outcome",
+        "solution",
+        "solutions",
         "technology stack",
         "the technology stack",
         "tech stack",
-        "general format",
-        "what the company is?",
-        "what we did?",
+        *FAKE_SECTION_LABELS,
     }
 )
 
@@ -31,4 +34,3 @@ def is_forbidden_title(text: str) -> bool:
 
 def is_field_heading(text: str) -> bool:
     return normalize_label(text) in FORBIDDEN_TITLES
-

@@ -20,7 +20,7 @@ from src.decks.drafts import FIELD_NAMES, ImageDraft, chunk_texts, image_role
 from src.decks.models import DeckImport, Study, StudyChunk, StudyImage, StudyVersion
 from src.decks.parse import section_for
 from src.decks.service import SUMMARY_CHARS, deck_path, storage_root
-from src.decks.validate import build_raw_text, is_banner
+from src.decks.validate import build_raw_text, infer_client_name, is_banner
 from src.embeddings import embed_texts
 
 COSINE_THRESHOLD = 0.999
@@ -48,9 +48,7 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
     )
     path = deck_path(deck.id)
     if not path.exists():
-        report.deck_checks.append(
-            CheckResult("missing", f"deck file is missing at {path}")
-        )
+        report.deck_checks.append(CheckResult("missing", f"deck file is missing at {path}"))
         report.attention.extend(report.deck_checks)
         return report
 
@@ -124,18 +122,14 @@ def audit_deck(session: Session, deck_id: UUID) -> AuditReport:
             )
 
     report.attention = [
-        check
-        for check in report.all_checks()
-        if check.status in {"missing", "incorrect", "extra"}
+        check for check in report.all_checks() if check.status in {"missing", "incorrect", "extra"}
     ]
     return report
 
 
 def _load_stored_studies(session: Session, deck: DeckImport) -> list[StoredStudy]:
     versions = list(
-        session.exec(
-            select(StudyVersion).where(StudyVersion.deck_import_id == deck.id)
-        ).all()
+        session.exec(select(StudyVersion).where(StudyVersion.deck_import_id == deck.id)).all()
     )
     by_study: dict[UUID, StoredStudy] = {}
     for version in versions:
@@ -185,9 +179,7 @@ def _chunks_for(session: Session, version_id: UUID) -> list[StudyChunk]:
 
 def _images_for(session: Session, version_id: UUID) -> list[StudyImage]:
     return list(
-        session.exec(
-            select(StudyImage).where(StudyImage.study_version_id == version_id)
-        ).all()
+        session.exec(select(StudyImage).where(StudyImage.study_version_id == version_id)).all()
     )
 
 
@@ -220,29 +212,13 @@ def _find_title_blocks(
     copy of the title is also a different place: ingest stored this study on
     its slide_numbers, so that copy is the span boundary.
     """
-    compact = " ".join(title.split())
-    candidates: list[list[TextBlock]] = []
-    for block in blocks:
-        if block.text.strip() == title or " ".join(block.text.split()) == compact:
-            candidates.append([block])
-    for index, first in enumerate(blocks[:-1]):
-        second = blocks[index + 1]
-        joined = f"{first.text.strip()} {second.text.strip()}"
-        if joined == title or " ".join(joined.split()) == compact:
-            candidates.append([first, second])
-    in_section = [
-        candidate
-        for candidate in candidates
-        if section_for(candidate[0].number, divider_marks) == section
-    ]
+    in_section = _title_candidates(title, blocks, section=section, divider_marks=divider_marks)
     if not in_section:
         return None
     stored_slides = set(slide_numbers or [])
     if stored_slides:
         on_stored_slide = [
-            candidate
-            for candidate in in_section
-            if candidate[0].slide in stored_slides
+            candidate for candidate in in_section if candidate[0].slide in stored_slides
         ]
         if on_stored_slide:
             return on_stored_slide[0]
@@ -254,19 +230,43 @@ def _stored_title_starts(
     blocks: list[TextBlock],
     divider_marks: list[tuple[int, str]],
 ) -> list[tuple[int, str]]:
+    """Every in-section title occurrence. Span ends at the next title in reading order."""
     starts: list[tuple[int, str]] = []
     for item in stored:
-        found = _find_title_blocks(
+        key = f"{item.study.section}\n{item.study.title}"
+        for candidate in _title_candidates(
             item.study.title,
             blocks,
             section=item.study.section,
             divider_marks=divider_marks,
-            slide_numbers=item.version.slide_numbers,
-        )
-        if found:
-            starts.append((found[0].number, f"{item.study.section}\n{item.study.title}"))
+        ):
+            starts.append((candidate[0].number, key))
     starts.sort(key=lambda item: item[0])
     return starts
+
+
+def _title_candidates(
+    title: str,
+    blocks: list[TextBlock],
+    *,
+    section: str,
+    divider_marks: list[tuple[int, str]],
+) -> list[list[TextBlock]]:
+    compact = " ".join(title.split())
+    candidates: list[list[TextBlock]] = []
+    for block in blocks:
+        if block.text.strip() == title or " ".join(block.text.split()) == compact:
+            candidates.append([block])
+    for index, first in enumerate(blocks[:-1]):
+        second = blocks[index + 1]
+        joined = f"{first.text.strip()} {second.text.strip()}"
+        if joined == title or " ".join(joined.split()) == compact:
+            candidates.append([first, second])
+    return [
+        candidate
+        for candidate in candidates
+        if section_for(candidate[0].number, divider_marks) == section
+    ]
 
 
 def _span_blocks(
@@ -389,38 +389,51 @@ def _audit_study(
             if block.text.strip() == study.section and study.section != "General":
                 claimed_numbers.add(block.number)
 
+    source = _study_source_text(
+        version,
+        title_blocks,
+        stored_titles,
+        blocks,
+        divider_marks=divider_marks,
+    )
     if study.client_name is None or not str(study.client_name).strip():
-        report.checks.append(
-            CheckResult("missing", f'"{study.title}" has no client_name', key)
-        )
-    elif study.client_name.strip().lower() == "arbisoft":
-        report.checks.append(
-            CheckResult("incorrect", f'"{study.title}" client_name is Arbisoft (vendor)', key)
-        )
-    else:
-        source = _study_source_text(
-            version,
-            title_blocks,
-            stored_titles,
-            blocks,
-            divider_marks=divider_marks,
-        )
-        if study.client_name.lower() in source.lower():
+        expected_client = infer_client_name(study.title, source)
+        if expected_client:
             report.checks.append(
                 CheckResult(
-                    "match",
-                    f'client_name "{study.client_name}" appears in the study text',
+                    "missing",
+                    f'"{study.title}" has no client_name; text names {expected_client}',
                     key,
                 )
             )
         else:
             report.checks.append(
                 CheckResult(
-                    "incorrect",
-                    f'client_name "{study.client_name}" does not appear in the study slide text',
+                    "match",
+                    f'"{study.title}" has no client_name and the slide names none',
                     key,
                 )
             )
+    elif study.client_name.strip().lower() == "arbisoft":
+        report.checks.append(
+            CheckResult("incorrect", f'"{study.title}" client_name is Arbisoft (vendor)', key)
+        )
+    elif study.client_name.lower() in source.lower():
+        report.checks.append(
+            CheckResult(
+                "match",
+                f'client_name "{study.client_name}" appears in the study text',
+                key,
+            )
+        )
+    else:
+        report.checks.append(
+            CheckResult(
+                "incorrect",
+                f'client_name "{study.client_name}" does not appear in the study slide text',
+                key,
+            )
+        )
 
     field_lines: dict[str, list[str]] = {}
     for name in FIELD_NAMES:
@@ -443,6 +456,7 @@ def _audit_study(
             blocks,
             divider_marks=divider_marks,
         )
+        title_compact = " ".join(study.title.split())
         body = [
             block
             for block in span
@@ -450,15 +464,15 @@ def _audit_study(
             and not is_banner(block.text)
             and not is_field_heading(block.text)
             and block.text.strip() not in divider_names
+            and block.text.strip() != study.title
+            and " ".join(block.text.split()) != title_compact
         ]
         for block in span:
             if is_banner(block.text) or is_field_heading(block.text):
                 claimed_numbers.add(block.number)
             if block.text.strip() in divider_names:
                 claimed_numbers.add(block.number)
-        all_field_lines = [
-            (name, line) for name, lines in field_lines.items() for line in lines
-        ]
+        all_field_lines = [(name, line) for name, lines in field_lines.items() for line in lines]
         missing_body = 0
         for block in body:
             claimed_numbers.add(block.number)
@@ -536,9 +550,7 @@ def _audit_study(
         )
         stored_slides = sorted(version.slide_numbers or [])
         if stored_slides == expected_slides:
-            report.checks.append(
-                CheckResult("match", f"slide_numbers {stored_slides}", key)
-            )
+            report.checks.append(CheckResult("match", f"slide_numbers {stored_slides}", key))
         else:
             report.checks.append(
                 CheckResult(
@@ -562,9 +574,7 @@ def _audit_study(
 
     report.checks.extend(_chunk_checks(item, key))
     report.checks.extend(_embedding_checks(item, key))
-    report.checks.extend(
-        _image_checks(item, slides_by_number=slides_by_number, study_key=key)
-    )
+    report.checks.extend(_image_checks(item, slides_by_number=slides_by_number, study_key=key))
     return report
 
 
@@ -604,7 +614,7 @@ def _line_check(
                 candidates.append(block.text.strip())
     stripped = line.strip()
     if stripped in candidates:
-        return CheckResult("match", f'{field} line matches a Docling block', key)
+        return CheckResult("match", f"{field} line matches a Docling block", key)
     # Partial line of a longer block
     for candidate in candidates:
         if stripped and stripped != candidate and stripped in candidate:
@@ -645,9 +655,7 @@ def _chunk_checks(item: StoredStudy, key: str) -> list[CheckResult]:
         return results
     for chunk, text in zip(chunks, expected, strict=True):
         if chunk.text == text:
-            results.append(
-                CheckResult("match", f"chunk {chunk.position} matches field text", key)
-            )
+            results.append(CheckResult("match", f"chunk {chunk.position} matches field text", key))
         else:
             results.append(
                 CheckResult(
@@ -750,7 +758,7 @@ def _image_checks(
             results.append(
                 CheckResult(
                     "missing",
-                    f'image file missing at {match.storage_key}',
+                    f"image file missing at {match.storage_key}",
                     study_key,
                 )
             )
@@ -848,9 +856,7 @@ def _extra_active_studies(
     stored_ids = {item.study.id for item in stored}
     active = list(session.exec(select(Study).where(Study.status == "active")).all())
     section_names = {
-        study.section
-        for study in active
-        if study.section and study.section != "General"
+        study.section for study in active if study.section and study.section != "General"
     }
     divider_marks = [
         (block.number, block.text.strip())
@@ -872,7 +878,7 @@ def _extra_active_studies(
             results.append(
                 CheckResult(
                     "extra",
-                    f'section: {study.section}, case study: {study.title} is still '
+                    f"section: {study.section}, case study: {study.title} is still "
                     "active and its text is not in this file",
                 )
             )

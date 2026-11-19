@@ -104,8 +104,7 @@ def test_banner_titles(monkeypatch, tmp_path) -> None:  # noqa: ANN001
         monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
         report = run_audit(deck_id)
         assert any(
-            check.status == "incorrect" and "banner" in check.message
-            for check in report.attention
+            check.status == "incorrect" and "banner" in check.message for check in report.attention
         ), title
 
 
@@ -167,8 +166,45 @@ def test_null_client_name(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
     report = run_audit(deck_id)
     assert any(
+        check.status == "missing" and "no client_name" in check.message and "KAYAK" in check.message
+        for check in report.attention
+    )
+
+
+def test_null_client_ok_when_slide_names_none(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    slides = [
+        SlideBlocks(
+            number=1,
+            blocks=[
+                TextBlock(
+                    1, 1, "Enhancing Retail Analytics with Advanced Data Services", "paragraph"
+                ),
+                TextBlock(2, 1, "The client needed to extract retail data.", "paragraph"),
+            ],
+        )
+    ]
+    deck_id = _seed_study(
+        monkeypatch,
+        tmp_path,
+        slides=slides,
+        section="General",
+        title="Enhancing Retail Analytics with Advanced Data Services",
+        client_name=None,
+        background="The client needed to extract retail data.",
+        raw_text="The client needed to extract retail data.",
+        slide_numbers=[1],
+    )
+    monkeypatch.setattr(audit_checks, "read_pptx_blocks", lambda path, deck_id=None: slides)
+    monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
+    report = run_audit(deck_id)
+    assert not any(
         check.status == "missing" and "no client_name" in check.message
         for check in report.attention
+    )
+    assert any(
+        check.status == "match" and "names none" in check.message
+        for study in report.studies
+        for check in study.checks
     )
 
 
@@ -283,9 +319,7 @@ def test_field_overlap_is_review_not_hard_issue(monkeypatch, tmp_path) -> None: 
     assert study.issue_count == 0
     assert study.review_count == 1
     assert any(
-        check.status == "review"
-        and "approach" in check.message
-        and "solution" in check.message
+        check.status == "review" and "approach" in check.message and "solution" in check.message
         for check in study.checks
     )
     text = format_report(report)
@@ -371,8 +405,7 @@ def test_raw_text_keeps_field_headings(monkeypatch, tmp_path) -> None:  # noqa: 
         for message in messages
     )
     assert any(
-        "was not found in raw_text" in message and "The Approach" in message
-        for message in messages
+        "was not found in raw_text" in message and "The Approach" in message for message in messages
     )
     assert not any(
         "was not found in background" in message and "The Challenge" in message
@@ -460,9 +493,7 @@ def test_body_block_missing_from_fields(monkeypatch, tmp_path) -> None:  # noqa:
         client_name="KAYAK",
         challenge="KAYAK needed a faster app.",
         raw_text=(
-            "The Challenge\n"
-            "KAYAK needed a faster app.\n"
-            "and the team shipped the iOS client."
+            "The Challenge\nKAYAK needed a faster app.\nand the team shipped the iOS client."
         ),
         slide_numbers=[1],
         extra_studies=[
@@ -545,9 +576,7 @@ def test_same_title_in_two_sections_uses_each_section_span(monkeypatch, tmp_path
     monkeypatch.setattr(audit_checks, "embed_texts", _fake_embed)
     report = run_audit(deck_id)
     edly = next(study for study in report.studies if study.section == "Edly Case Studies")
-    mobile = next(
-        study for study in report.studies if study.section == "Mobile App Development"
-    )
+    mobile = next(study for study in report.studies if study.section == "Mobile App Development")
     assert edly.fully_matched
     assert mobile.fully_matched
     assert edly.slide_numbers == [4]

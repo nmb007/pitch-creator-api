@@ -32,9 +32,7 @@ def get_chat_model(role: Role = "default") -> BaseChatModel:
     if provider in {"groq", "openai"}:
         return _openai_compatible_model(role, provider)
     if provider == "local":
-        raise RuntimeError(
-            "Local GGUF chat is only used through complete_json(provider=local)."
-        )
+        raise RuntimeError("Local GGUF chat is only used through complete_json(provider=local).")
     raise ValueError(f"Unknown LLM provider {provider!r}")
 
 
@@ -65,11 +63,7 @@ def complete_json(
 ) -> dict[str, Any]:
     """Run a JSON completion. Shape should match ``schema``."""
     provider = provider_for(role)
-    effort = (
-        settings.STRUCTURE_LLM_REASONING_EFFORT.strip()
-        if role == "structure"
-        else ""
-    )
+    effort = settings.STRUCTURE_LLM_REASONING_EFFORT.strip() if role == "structure" else ""
     max_tokens = settings.STRUCTURE_LLM_MAX_TOKENS if role == "structure" else 0
     logger.info(
         "LLM complete_json role=%s provider=%s model=%s%s%s",
@@ -92,9 +86,7 @@ def complete_json(
 def _as_provider(value: str) -> Provider:
     name = (value or "groq").strip().lower()
     if name not in {"groq", "openai", "local"}:
-        raise ValueError(
-            f"LLM provider must be groq, openai, or local; got {value!r}"
-        )
+        raise ValueError(f"LLM provider must be groq, openai, or local; got {value!r}")
     return name  # type: ignore[return-value]
 
 
@@ -133,8 +125,12 @@ def _complete_json_langchain(
     role: Role,
 ) -> dict[str, Any]:
     model = get_chat_model(role)
-    # json_mode works on Groq and other OpenAI-compatible APIs.
-    structured = model.with_structured_output(schema, method="json_mode")
+    # json_schema + strict uses constrained decoding on gpt-oss (and OpenAI).
+    structured = model.with_structured_output(
+        schema,
+        method="json_schema",
+        strict=True,
+    )
     messages = [SystemMessage(content=system), HumanMessage(content=user)]
     limit = max(0, settings.STRUCTURE_LLM_RETRY_LIMIT)
     for attempt in range(limit + 1):

@@ -86,8 +86,5 @@ class AuditReport:
     @property
     def field_overlaps(self) -> list[CheckResult]:
         return [
-            check
-            for study in self.studies
-            for check in study.checks
-            if check.status == "review"
+            check for study in self.studies for check in study.checks if check.status == "review"
         ]
