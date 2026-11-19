@@ -398,15 +398,18 @@ def _unique_ints(values: list[int]) -> list[int]:
     return ordered
 
 
-# Template / legend lines. Never treat these as section dividers.
-FAKE_SECTION_LABELS = frozenset(
+# Template, legend, and promo lines. Never study titles or section dividers.
+NON_CONTENT_LABELS = frozenset(
     {
+        "design case study: view our design case studies here",
         "format",
         "general format",
         "what the company is?",
         "what we did?",
     }
 )
+# Back-compat alias for older imports.
+FAKE_SECTION_LABELS = NON_CONTENT_LABELS
 
 # Cover and category dividers. Always section, even when the model says otherwise.
 # Also banners so they stay out of study raw_text.
@@ -450,9 +453,9 @@ def _normalize_label(text: str) -> str:
 
 
 def _normalize_outline_type(block_type: str, text: str) -> str:
-    """Force known cover dividers and reject fake template sections."""
+    """Force known cover dividers and reject non-content / template lines."""
     lowered = _normalize_label(text)
-    if lowered in FAKE_SECTION_LABELS:
+    if lowered in NON_CONTENT_LABELS:
         return "header_note"
     if lowered in _SECTION_HEADER_BANNERS:
         return "section"
@@ -478,7 +481,7 @@ def _is_banner(text: str) -> bool:
             "edly.io",
         }
         or lowered in _SECTION_HEADER_BANNERS
-        or lowered in FAKE_SECTION_LABELS
+        or lowered in NON_CONTENT_LABELS
     ):
         return True
     if "edly.io" in lowered:

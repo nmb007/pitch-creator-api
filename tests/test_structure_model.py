@@ -18,6 +18,8 @@ def test_held_heading_message_forbids_relisting_block_id() -> None:
     assert "do not re-list this block_id" in message
     assert '"block_id": 5' in message
     assert "Never re-list a Held open heading" in sm.OUTLINE_SYSTEM_PROMPT
+    assert "master PowerPoint of client case studies" in sm.OUTLINE_SYSTEM_PROMPT
+    assert "Never label a case-study headline as paragraph" in sm.OUTLINE_SYSTEM_PROMPT
 
 
 def test_structure_outline_caches_only_after_commit(

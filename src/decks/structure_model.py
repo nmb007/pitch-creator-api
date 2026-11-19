@@ -17,8 +17,14 @@ logger = logging.getLogger(__name__)
 BLOCK_TYPES = ("title", "section", "header_note", "heading", "paragraph")
 
 OUTLINE_SYSTEM_PROMPT = """\
-You label every Docling block in an Arbisoft PowerPoint batch. Return only \
-block ids and types. Do not copy or rewrite block text.
+Context: You are labeling text extracted from an Arbisoft / Edly master \
+PowerPoint of client case studies. Slides usually show running proposal \
+banners, optional category dividers, one or more case-study headlines, \
+field labels (challenge, approach, outcome, tech stack), and body copy. \
+Some slides are only a category divider, a format legend, or a promo CTA. \
+Your job is to classify each Docling block in the current batch by role.
+
+Return only block ids and types. Do not copy or rewrite block text.
 
 Reply shape (required):
 - One JSON object. Top level must be {"blocks":[...]}, never a bare array.
@@ -28,27 +34,36 @@ Reply shape (required):
 - Label only ids listed under Blocks. Never re-list a Held open heading \
 block_id; that id is from an earlier batch and is not in this batch.
 
-block_type values:
-- title: the short name of one case study (headline). Two adjacent lines that \
-together make one wrapped name are both title.
-- section: a short category divider that labels the studies that follow \
+How to choose block_type:
+- title: the short headline name of one case study (what the study is \
+called). Usually appears after banners such as Arbisoft Proposal / \
+Confidential, and is followed by field headings such as The Challenge or \
+Background. Often a short phrase or project name, not a full sentence. \
+Two adjacent lines that together make one wrapped name are both title. \
+Never label a case-study headline as paragraph.
+- section: a short category divider that groups the studies that follow \
 (for example "Arbisoft Case Studies", "Edly Case Studies", \
 "Cross platform App Case Studies", "Mobile App Development", \
-"Ecommerce", "Healthcare", "Managed Hosting").
-- header_note: running banners and footers such as Arbisoft Proposal, Edly \
-Proposal, Confidential, valid till, valid until, dates, www.arbisoft.com, \
-edly.io, axim proposals, page number placeholders, and template legend \
-lines such as Format, General Format, What the Company Is?, and What We Did?.
-- heading: a field label such as The Challenge, The Approach, The Outcome, \
-Background, Challenges, Solutions, Solution, Technology Stack, Tech Stack. \
-Set field to exactly one of background, challenge, approach, solution, \
-outcome, tech_stack when you know which. Leave field empty when unsure. \
-Put the paragraph block ids that belong under this heading in children. \
-Those child paragraphs must also appear as their own paragraph entries. \
-Children must be ids from this batch only.
-- paragraph: body sentences and bullet lines. If a paragraph continues a \
-Held open heading from an earlier slide, label it paragraph with children \
-[]. Do not re-emit the held heading. Code will attach those paragraphs.
+"Ecommerce", "Healthcare", "Managed Hosting", "Fintech Design", "QA"). \
+It names a theme or practice area, not one client's story.
+- header_note: chrome that is not study content — running banners and \
+footers such as Arbisoft Proposal, Edly Proposal, Confidential, valid \
+till, valid until, dates, www.arbisoft.com, edly.io, axim proposals, page \
+number placeholders; template legend lines such as Format, General \
+Format, What the Company Is?, and What We Did?; and promo / CTA lines \
+such as Design Case Study: View Our Design Case Studies here.
+- heading: a field label only, such as The Challenge, The Approach, The \
+Outcome, Background, Challenges, Solutions, Solution, Technology Stack, \
+Tech Stack. Set field to exactly one of background, challenge, approach, \
+solution, outcome, tech_stack when you know which. Leave field empty when \
+unsure. Put the paragraph block ids that belong under this heading in \
+children. Those child paragraphs must also appear as their own paragraph \
+entries. Children must be ids from this batch only.
+- paragraph: body sentences and bullet lines that tell the story under a \
+heading. If a paragraph continues a Held open heading from an earlier \
+slide, label it paragraph with children []. Do not re-emit the held \
+heading. Code will attach those paragraphs. Do not use paragraph for a \
+case-study headline that sits above The Challenge / Background.
 
 Example. Blocks:
 10. slide=13 text=Arbisoft Proposal for XYZ Ltd
@@ -68,6 +83,8 @@ Bad reply (do not do this): omitting a block id from the input, or inventing \
 a new id.
 Bad reply (do not do this): re-listing a Held open heading block_id that is \
 not under Blocks.
+Bad reply (do not do this): labeling a case-study headline as paragraph \
+when The Challenge or Background follows it.
 
 Return JSON only, matching the required shape.
 """

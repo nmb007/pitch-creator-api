@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.decks.validate import FAKE_SECTION_LABELS, is_banner
+from src.decks.validate import NON_CONTENT_LABELS, is_banner
 
 FORBIDDEN_TITLES = frozenset(
     {
@@ -19,7 +19,7 @@ FORBIDDEN_TITLES = frozenset(
         "technology stack",
         "the technology stack",
         "tech stack",
-        *FAKE_SECTION_LABELS,
+        *NON_CONTENT_LABELS,
     }
 )
 
