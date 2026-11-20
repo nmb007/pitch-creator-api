@@ -25,9 +25,16 @@ study is about — the company or institution Arbisoft or Edly worked for.
 
 Rules:
 - Read the title and the body. Prefer an explicit organization name that \
-appears in that text (for example KAYAK, Harvard, Landit, MIT, Wikimedia).
-- Return the shortest clear name people would search for (for example \
-"Harvard" not a full slogan; "CLEAResult" when that is the client).
+appears in that text (for example KAYAK, Harvard, Landit, MIT, Wikimedia, \
+Cheetay).
+- Copy the client name exactly as written in the title or body — same \
+letters, same spelling, same capitalization pattern as the source text. \
+Do not correct, translate, phoneticize, or substitute a look-alike word \
+(for example if the text says "Cheetay", return "Cheetay", never "cheetah" \
+or "Cheetah").
+- Return the shortest clear organization token from the text (for example \
+"Harvard" not a full slogan; "CLEAResult" when that is the client), but \
+still use the exact spelling found in the text.
 - If the text only says "the client", "a leading firm", or never names an \
 organization, return an empty client_name.
 - Never invent a name that is not written in the title or body.

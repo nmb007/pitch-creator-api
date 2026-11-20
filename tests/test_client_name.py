@@ -29,6 +29,24 @@ def test_drops_vendor_names() -> None:
     assert accept_client_name("Edly", "Edly partnered with Harvard.") is None
 
 
+def test_drops_respelled_client_not_in_text() -> None:
+    source = (
+        "Scaling Cheetay’s Multi-App Delivery Platform Across Pakistan\n"
+        "Cheetay needed a multi-app delivery platform."
+    )
+    assert accept_client_name("cheetah", source) is None
+    assert accept_client_name("Cheetah", source) is None
+    assert accept_client_name("Cheetay", source) == "Cheetay"
+
+
+def test_prompt_requires_exact_spelling_from_text() -> None:
+    prompt = cn.CLIENT_SYSTEM_PROMPT.lower()
+    assert "exactly as written" in prompt
+    assert "cheetay" in prompt
+    assert "cheetah" in prompt
+    assert "do not correct" in prompt or "never" in prompt
+
+
 def test_build_client_message_includes_title_and_raw_text() -> None:
     message = build_client_message(
         title="Driving Global Science Education with Harvard’s LabXchange",
