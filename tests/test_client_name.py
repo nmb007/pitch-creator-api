@@ -1,6 +1,9 @@
-"""Client names stay only when the study blocks already say that name."""
+"""Client names come from the structure LLM, then must appear in the study text."""
 
-from src.decks.client_name import accept_client_name, infer_client_name
+from __future__ import annotations
+
+from src.decks import client_name as cn
+from src.decks.client_name import accept_client_name, build_client_message, infer_client_name
 
 
 def test_stores_name_the_study_already_says() -> None:
@@ -21,22 +24,86 @@ def test_drops_name_the_study_does_not_say() -> None:
     assert name is None
 
 
-def test_infer_client_from_possessive_title() -> None:
+def test_drops_vendor_names() -> None:
+    assert accept_client_name("Arbisoft", "Arbisoft built the platform.") is None
+    assert accept_client_name("Edly", "Edly partnered with Harvard.") is None
+
+
+def test_build_client_message_includes_title_and_raw_text() -> None:
+    message = build_client_message(
+        title="Driving Global Science Education with Harvard’s LabXchange",
+        raw_text="Harvard led the LabXchange science platform.",
+    )
+    assert "Case study title:" in message
+    assert "Harvard’s LabXchange" in message
+    assert "Case study raw_text:" in message
+    assert "Harvard led the LabXchange" in message
+
+
+def test_infer_client_uses_llm_reply_when_present_in_text(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(
+        cn,
+        "ask_client_name",
+        lambda title, raw_text: "Harvard",
+    )
     name = infer_client_name(
         "Driving Global Science Education with Harvard’s LabXchange",
-        "Driving Global Science Education with Harvard’s LabXchange\n"
         "Harvard led the LabXchange science platform.",
     )
     assert name == "Harvard"
 
 
-def test_infer_client_empty_when_only_the_client() -> None:
+def test_infer_client_empty_when_llm_says_none(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(cn, "ask_client_name", lambda title, raw_text: "")
     name = infer_client_name(
         "Enhancing Retail Analytics with Advanced Data Services",
-        "Enhancing Retail Analytics with Advanced Data Services\n"
         "The client needed to extract retail data from many websites.",
     )
     assert name is None
+
+
+def test_infer_client_rejects_llm_hallucination(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setattr(cn, "ask_client_name", lambda title, raw_text: "Acme Corp")
+    name = infer_client_name(
+        "Enhancing Retail Analytics with Advanced Data Services",
+        "The client needed to extract retail data from many websites.",
+    )
+    assert name is None
+
+
+def test_ask_client_name_calls_complete_json(monkeypatch, tmp_path) -> None:  # noqa: ANN001
+    calls: list[dict] = []
+
+    def fake_complete(**kwargs):  # noqa: ANN003
+        calls.append(kwargs)
+        return {"client_name": "KAYAK"}
+
+    def real_ask(title: str, raw_text: str) -> str:
+        message = build_client_message(title=title, raw_text=raw_text)
+        payload = cn._cached_complete(message)
+        value = payload.get("client_name", "")
+        return "" if value is None else str(value).strip()
+
+    monkeypatch.setattr(cn, "_cache_path_for", lambda message: tmp_path / "client.json")
+    monkeypatch.setattr(cn, "complete_json", fake_complete)
+    monkeypatch.setattr(cn, "ask_client_name", real_ask)
+    reply = cn.ask_client_name(
+        "Elevating KAYAK's Mobile Experience",
+        "KAYAK needed a faster mobile app.",
+    )
+    assert reply == "KAYAK"
+    assert len(calls) == 1
+    assert calls[0]["system"] == cn.CLIENT_SYSTEM_PROMPT
+    assert "Case study title:" in calls[0]["user"]
+    assert "KAYAK needed a faster mobile app." in calls[0]["user"]
+    assert calls[0]["schema"] == cn.CLIENT_JSON_SCHEMA
+    assert calls[0]["role"] == "structure"
+    # Second call hits cache and does not call complete_json again.
+    assert cn.ask_client_name(
+        "Elevating KAYAK's Mobile Experience",
+        "KAYAK needed a faster mobile app.",
+    ) == "KAYAK"
+    assert len(calls) == 1
 
 
 def test_unchanged_study_keeps_client_name_without_rewrite(monkeypatch) -> None:  # noqa: ANN001

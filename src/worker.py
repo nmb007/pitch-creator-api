@@ -2,7 +2,9 @@
 
 from celery import Celery
 
-from src.config import settings
+from src.config import configure_tracing, settings
+
+configure_tracing()
 
 celery_app = Celery(
     "pitch_creator",

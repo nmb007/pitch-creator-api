@@ -20,7 +20,8 @@ from src.decks.drafts import FIELD_NAMES, ImageDraft, chunk_texts, image_role
 from src.decks.models import DeckImport, Study, StudyChunk, StudyImage, StudyVersion
 from src.decks.parse import section_for
 from src.decks.service import SUMMARY_CHARS, deck_path, storage_root
-from src.decks.validate import build_raw_text, infer_client_name, is_banner
+from src.decks.client_name import infer_client_name
+from src.decks.validate import build_raw_text, is_banner
 from src.embeddings import embed_texts
 
 COSINE_THRESHOLD = 0.999

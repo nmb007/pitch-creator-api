@@ -578,7 +578,7 @@ def test_field_text_copied_from_heading_children(tmp_path) -> None:  # noqa: ANN
     assert drafts[0].challenge != "Challenges"
 
 
-def test_client_name_inferred_from_title(tmp_path) -> None:  # noqa: ANN001
+def test_client_name_from_llm_when_named_in_study(tmp_path) -> None:  # noqa: ANN001
     path = tmp_path / "deck.pptx"
     presentation = Presentation()
     blank = presentation.slide_layouts[6]

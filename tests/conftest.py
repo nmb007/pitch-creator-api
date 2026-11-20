@@ -24,7 +24,13 @@ os.environ["GROQ_BASE_URL"] = "https://api.groq.com/openai/v1"
 os.environ["OPENAI_API_KEY"] = "ollama"
 os.environ["OPENAI_BASE_URL"] = "http://127.0.0.1:11434/v1"
 os.environ["LANGSMITH_API_KEY"] = ""
-os.environ["LANGSMITH_PROJECT"] = "pitch-creator"
+os.environ["LANGSMITH_TRACING"] = "false"
+os.environ["LANGSMITH_ENDPOINT"] = ""
+os.environ["LANGSMITH_AGENT_ID"] = ""
+os.environ["LANGSMITH_AGENT_ENVIRONMENT"] = ""
+os.environ.pop("LANGSMITH_PROJECT", None)
+os.environ.pop("LANGCHAIN_PROJECT", None)
+os.environ.pop("LANGCHAIN_SESSION", None)
 os.environ["SEED_USER_EMAIL"] = ""
 os.environ["SEED_USER_PASSWORD"] = ""
 os.environ["SEED_USER_NAME"] = "Demo User"
@@ -91,6 +97,42 @@ def _stub_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(pitch_service, "start_search", fake_start)
     monkeypatch.setattr(deck_service, "enqueue_ingest", fake_enqueue)
+
+
+@pytest.fixture(autouse=True)
+def _stub_client_name_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Parse/audit tests must not call Groq. Unit tests can override ask_client_name."""
+    from src.decks import client_name as client_name_mod
+
+    # Longer names first so "Braces on Demand" wins over a shorter fragment.
+    known = (
+        "Braces on Demand",
+        "CLEAResult",
+        "Toastmasters",
+        "Wikimedia",
+        "Wanderu",
+        "Harvard",
+        "Landit",
+        "KAYAK",
+        "Audacy",
+        "Caliper",
+        "edX",
+        "MIT",
+        "ALW",
+        "Rizq",
+    )
+
+    def fake_ask(title: str, raw_text: str) -> str:
+        source = f"{title}\n{raw_text}"
+        lowered = source.lower()
+        if "the client" in lowered and not any(name.lower() in lowered for name in known):
+            return ""
+        for name in known:
+            if name.lower() in lowered:
+                return name
+        return ""
+
+    monkeypatch.setattr(client_name_mod, "ask_client_name", fake_ask)
 
 
 @pytest_asyncio.fixture

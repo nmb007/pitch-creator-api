@@ -7,12 +7,12 @@ import re
 from typing import Any
 
 from src.decks.blocks import SlideBlocks, TextBlock
+from src.decks.client_name import accept_client_name, infer_client_name
 from src.decks.drafts import FIELD_NAMES, StudyDraft
 from src.decks.structure_model import BLOCK_TYPES
 
 logger = logging.getLogger(__name__)
 
-_EMPTY_NAMES = {"none", "null", "n/a", "na", "unknown", "unnamed", "not found", ""}
 _FIELD_SET = frozenset(FIELD_NAMES)
 
 DATE_LINE = re.compile(
@@ -23,27 +23,17 @@ DATE_LINE = re.compile(
 
 PAGE_LINE = re.compile(r"^page\s*[‹<]?#?[›>]?$", re.IGNORECASE)
 
-# Possessive client in a title: "Harvard's LabXchange", "Audacy's Hybrid".
-_POSSESSIVE = re.compile(
-    r"\b([A-Z][\w.&]+)['’]s\b",
-)
-# Prefer explicit vendor/client phrasing over bare "for" / "with".
-_TITLE_ROLE = re.compile(
-    r"(?i)\b(?:partnered with|led by)\s+"
-    r"([A-Z][\w.&]*(?:\s+[A-Z][\w.&]*){0,5})",
-)
-# Body often opens with the client: "KAYAK serves…", "Landit needed…".
-_BODY_LEAD = re.compile(
-    r"\b([A-Z][\w.&]{1,40})\s+(?:serves|needed|set out|aimed|partnered)\b",
-)
-_GENERIC_CLIENT = frozenset(
-    {
-        "the client",
-        "client",
-        "advanced data services",
-        "global social impact",
-        "scalable",
-    }
+# Re-export for callers that imported client helpers from validate.
+__all__ = (
+    "StructureValidationError",
+    "accept_client_name",
+    "build_raw_text",
+    "draft_from_labeled_span",
+    "infer_client_name",
+    "is_banner",
+    "is_section_header",
+    "outline_from_payload",
+    "study_slide_numbers",
 )
 
 
@@ -234,16 +224,10 @@ def draft_from_labeled_span(
         slide = slides_by_number.get(number)
         if slide is not None:
             images.extend(slide.images)
-    source = "\n".join(
-        [
-            title,
-            *(blocks_by_number[n].text for n in ordered_raw if n in blocks_by_number),
-        ]
-    )
     return StudyDraft(
         section=section or "General",
         title=title,
-        client_name=infer_client_name(title, source),
+        client_name=infer_client_name(title, raw_text),
         raw_text=raw_text,
         background=fields["background"],
         challenge=fields["challenge"],
@@ -321,47 +305,6 @@ def build_raw_text(
             continue
         lines.append(text)
     return "\n".join(lines)
-
-
-def accept_client_name(reply: str, source: str) -> str | None:
-    line = reply.splitlines()[0].strip().strip("\"'`").strip() if reply else ""
-    if not line or line.lower().rstrip(".") in _EMPTY_NAMES:
-        return None
-    if len(line) > 300 or line.lower() == "arbisoft":
-        return None
-    if line.lower() not in source.lower():
-        return None
-    return line
-
-
-def infer_client_name(title: str, source: str) -> str | None:
-    """Pick a client already written in the title or body. Never invent one."""
-    candidates: list[str] = []
-    for match in _POSSESSIVE.finditer(title):
-        candidates.append(match.group(1).strip())
-    for match in _TITLE_ROLE.finditer(title):
-        candidates.append(match.group(1).strip().rstrip(".,:;"))
-    # "Case Study: Acme Corp - …" — take a short name before a dash, not a slogan.
-    if re.match(r"(?i)^case study:", title):
-        after = title.split(":", 1)[1].strip()
-        piece = re.split(r"\s+[-–—]\s+", after, maxsplit=1)[0].strip()
-        if (
-            piece
-            and len(piece.split()) <= 4
-            and not piece.lower().startswith(
-                ("optimizing", "enhancing", "building", "transforming", "how ")
-            )
-        ):
-            candidates.append(piece)
-    for match in _BODY_LEAD.finditer(source):
-        candidates.append(match.group(1).strip())
-    for name in candidates:
-        if name.lower() in _GENERIC_CLIENT:
-            continue
-        accepted = accept_client_name(name, source)
-        if accepted is not None:
-            return accepted
-    return None
 
 
 def is_banner(text: str) -> bool:

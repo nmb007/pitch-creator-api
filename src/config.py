@@ -18,7 +18,12 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_BASE_URL: str
     LANGSMITH_API_KEY: str
-    LANGSMITH_PROJECT: str
+    # Optional LangSmith tracing extras (empty is fine when tracing is off).
+    LANGSMITH_TRACING: str = ""
+    LANGSMITH_ENDPOINT: str = ""
+    # Agent addressing (do not also set LANGSMITH_PROJECT).
+    LANGSMITH_AGENT_ID: str = ""
+    LANGSMITH_AGENT_ENVIRONMENT: str = ""
     SEED_USER_EMAIL: str
     SEED_USER_PASSWORD: str
     SEED_USER_NAME: str
@@ -60,9 +65,22 @@ def checkpoint_conninfo() -> str:
 
 def configure_tracing() -> None:
     """Turn LangSmith on only when a key is present. An empty key must not stop startup."""
+    # Agent addressing conflicts with legacy project destination vars.
+    for legacy in ("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT", "LANGCHAIN_SESSION"):
+        os.environ.pop(legacy, None)
+
     if settings.LANGSMITH_API_KEY:
-        os.environ["LANGSMITH_TRACING"] = "true"
+        tracing = (settings.LANGSMITH_TRACING or "true").strip().lower()
+        os.environ["LANGSMITH_TRACING"] = tracing if tracing else "true"
         os.environ["LANGSMITH_API_KEY"] = settings.LANGSMITH_API_KEY
-        os.environ["LANGSMITH_PROJECT"] = settings.LANGSMITH_PROJECT
+        endpoint = settings.LANGSMITH_ENDPOINT.strip()
+        if endpoint:
+            os.environ["LANGSMITH_ENDPOINT"] = endpoint
+        agent_id = settings.LANGSMITH_AGENT_ID.strip()
+        if agent_id:
+            os.environ["LANGSMITH_AGENT_ID"] = agent_id
+        agent_env = settings.LANGSMITH_AGENT_ENVIRONMENT.strip()
+        if agent_env:
+            os.environ["LANGSMITH_AGENT_ENVIRONMENT"] = agent_env
         return
     os.environ["LANGSMITH_TRACING"] = "false"
