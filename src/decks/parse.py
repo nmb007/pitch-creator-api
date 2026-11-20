@@ -13,6 +13,7 @@ from src.decks.blocks import SlideBlocks, TextBlock, read_pptx_blocks
 from src.decks.drafts import FIELD_NAMES, ImageDraft, StudyDraft
 from src.decks.ingest_log import (
     IngestPhase,
+    ingest_alert,
     ingest_info,
     slide_range,
 )
@@ -154,9 +155,8 @@ def _collect_outline(
                     }
                 )
                 if log_id is not None:
-                    ingest_info(
+                    ingest_alert(
                         log_id,
-                        IngestPhase.OUTLINE,
                         f"outline rejected for slides {slide_range(slide_nos)}: {last_error}",
                     )
         if accepted is None or accepted_payload is None:
@@ -168,9 +168,8 @@ def _collect_outline(
         # but the model marked no case-study title (common miss).
         if _section_headings_without_title(accepted):
             if log_id is not None:
-                ingest_info(
+                ingest_alert(
                     log_id,
-                    IngestPhase.OUTLINE,
                     f"outline title-miss retry for slides {slide_range(slide_nos)}: "
                     f"found section and field heading(s) but 0 titles; calling model once more.",
                 )
@@ -194,9 +193,8 @@ def _collect_outline(
                 accepted_payload = retry_payload
                 retry_titles = sum(1 for item in accepted if item["block_type"] == "title")
                 if log_id is not None:
-                    ingest_info(
+                    ingest_alert(
                         log_id,
-                        IngestPhase.OUTLINE,
                         f"outline title-miss retry result for slides "
                         f"{slide_range(slide_nos)}: {retry_titles} title(s).",
                     )
@@ -204,9 +202,8 @@ def _collect_outline(
                 if persist_cache:
                     discard_outline_cache(message)
                 if log_id is not None:
-                    ingest_info(
+                    ingest_alert(
                         log_id,
-                        IngestPhase.OUTLINE,
                         f"outline title-miss retry rejected for slides "
                         f"{slide_range(slide_nos)}: {exc}; keeping first accepted outline.",
                     )

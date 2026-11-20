@@ -10,6 +10,10 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 _RESET = "\033[0m"
+# Bold blue: readable on light and dark terminal backgrounds.
+_READ_COLOR = "\033[1;34m"
+# Red for validation failures, retries, and other problem lines.
+_ALERT_COLOR = "\033[31m"
 
 
 class IngestPhase(StrEnum):
@@ -26,7 +30,7 @@ class IngestPhase(StrEnum):
 
 
 _PHASE_COLOR: dict[IngestPhase, str] = {
-    IngestPhase.READ: "\033[36m",
+    IngestPhase.READ: _READ_COLOR,
     IngestPhase.OUTLINE: "\033[33m",
     IngestPhase.TITLES: "\033[33m",
     IngestPhase.FIELDS: "\033[35m",
@@ -34,7 +38,7 @@ _PHASE_COLOR: dict[IngestPhase, str] = {
     IngestPhase.EMBED: "\033[96m",
     IngestPhase.HIDE: "\033[90m",
     IngestPhase.DONE: "\033[32m",
-    IngestPhase.FAILED: "\033[31m",
+    IngestPhase.FAILED: _ALERT_COLOR,
 }
 
 
@@ -57,11 +61,24 @@ def block_phrase(block_numbers: list[int]) -> str:
     return f"blocks {joined}"
 
 
+def _color_enabled() -> bool:
+    return not os.environ.get("NO_COLOR")
+
+
 def ingest_info(deck_id: UUID | str, phase: IngestPhase, message: str) -> None:
     tag = import_tag(deck_id)
     line = f"Import {tag}: {message}"
-    if not os.environ.get("NO_COLOR"):
+    if _color_enabled():
         color = _PHASE_COLOR.get(phase, "")
         if color:
             line = f"{color}{line}{_RESET}"
+    logger.info(line)
+
+
+def ingest_alert(deck_id: UUID | str, message: str) -> None:
+    """Log a problem line (reject, retry, title-miss) in red so it stands out."""
+    tag = import_tag(deck_id)
+    line = f"Import {tag}: {message}"
+    if _color_enabled():
+        line = f"{_ALERT_COLOR}{line}{_RESET}"
     logger.info(line)

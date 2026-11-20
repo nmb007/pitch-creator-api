@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from functools import lru_cache
@@ -140,14 +141,14 @@ def _complete_json_langchain(
             if attempt == limit or not _retryable_json_error(exc):
                 raise
             delay = _backoff_seconds(attempt)
-            logger.warning(
-                "LLM complete_json role=%s %s; retrying in %.1fs (%s/%s)",
-                role,
-                _json_error_reason(exc),
-                delay,
-                attempt + 1,
-                limit,
+            reason = _json_error_reason(exc)
+            msg = (
+                f"LLM complete_json role={role} {reason}; "
+                f"retrying in {delay:.1f}s ({attempt + 1}/{limit})"
             )
+            if not os.environ.get("NO_COLOR"):
+                msg = f"\033[31m{msg}\033[0m"
+            logger.warning(msg)
             time.sleep(delay)
     raise RuntimeError("LLM complete_json retries exhausted")
 
