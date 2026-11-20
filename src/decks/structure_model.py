@@ -121,17 +121,46 @@ OUTLINE_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
-def structure_outline(user_message: str) -> dict[str, Any]:
+def structure_outline(
+    user_message: str,
+    *,
+    deck_id: str | None = None,
+    slide_start: int | None = None,
+    slide_end: int | None = None,
+    outline_call: int | None = None,
+    title_miss: bool = False,
+) -> dict[str, Any]:
     """Ask the structure LLM to label every block in the batch.
 
     Reads a prior validated cache entry when present. Does not write the cache;
     call commit_outline_cache after outline_from_payload succeeds.
     """
+    tags = ["deck_ingest", "outline"]
+    if title_miss:
+        tags.append("retry")
+        tags.append("title_miss_retry")
+    metadata: dict[str, Any] = {
+        "pipeline": "deck_ingest",
+        "kind": "outline",
+        "deck_id": str(deck_id) if deck_id is not None else None,
+        "slide_start": slide_start,
+        "slide_end": slide_end,
+        "outline_call": outline_call,
+        "title_miss": title_miss,
+        "model": model_name_for("structure"),
+        "provider": provider_for("structure"),
+    }
+    run_name = "outline"
+    if slide_start is not None and slide_end is not None:
+        run_name = f"outline slides {slide_start}–{slide_end}"
     return _cached_complete(
         OUTLINE_SYSTEM_PROMPT,
         OUTLINE_JSON_SCHEMA,
         user_message,
         kind="outline",
+        tags=tags,
+        metadata=metadata,
+        run_name=run_name,
     )
 
 
@@ -196,6 +225,9 @@ def _cached_complete(
     user_message: str,
     *,
     kind: str,
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    run_name: str | None = None,
 ) -> dict[str, Any]:
     cache_path = _cache_path_for(system_prompt, schema, user_message)
     if cache_path.exists():
@@ -213,6 +245,9 @@ def _cached_complete(
         user=user_message,
         schema=schema,
         role="structure",
+        tags=tags,
+        metadata=metadata,
+        run_name=run_name,
     )
     if not isinstance(payload, dict):
         raise ValueError("Structure model JSON must be an object")

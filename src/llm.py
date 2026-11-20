@@ -61,8 +61,15 @@ def complete_json(
     user: str,
     schema: dict[str, Any],
     role: Role = "structure",
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    run_name: str | None = None,
 ) -> dict[str, Any]:
-    """Run a JSON completion. Shape should match ``schema``."""
+    """Run a JSON completion. Shape should match ``schema``.
+
+    ``tags``, ``metadata``, and ``run_name`` are forwarded to LangSmith via
+    LangChain invoke config. Retries add a ``retry`` tag and an ``attempt`` field.
+    """
     provider = provider_for(role)
     effort = settings.STRUCTURE_LLM_REASONING_EFFORT.strip() if role == "structure" else ""
     max_tokens = settings.STRUCTURE_LLM_MAX_TOKENS if role == "structure" else 0
@@ -81,6 +88,9 @@ def complete_json(
         user=user,
         schema=schema,
         role=role,
+        tags=tags,
+        metadata=metadata,
+        run_name=run_name,
     )
 
 
@@ -124,6 +134,9 @@ def _complete_json_langchain(
     user: str,
     schema: dict[str, Any],
     role: Role,
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    run_name: str | None = None,
 ) -> dict[str, Any]:
     model = get_chat_model(role)
     # json_schema + strict uses constrained decoding on gpt-oss (and OpenAI).
@@ -136,7 +149,17 @@ def _complete_json_langchain(
     limit = max(0, settings.STRUCTURE_LLM_RETRY_LIMIT)
     for attempt in range(limit + 1):
         try:
-            return _as_json_object(structured.invoke(messages))
+            return _as_json_object(
+                structured.invoke(
+                    messages,
+                    config=_langsmith_config(
+                        tags=tags,
+                        metadata=metadata,
+                        run_name=run_name,
+                        attempt=attempt,
+                    ),
+                )
+            )
         except Exception as exc:
             if attempt == limit or not _retryable_json_error(exc):
                 raise
@@ -151,6 +174,25 @@ def _complete_json_langchain(
             logger.warning(msg)
             time.sleep(delay)
     raise RuntimeError("LLM complete_json retries exhausted")
+
+
+def _langsmith_config(
+    *,
+    tags: list[str] | None,
+    metadata: dict[str, Any] | None,
+    run_name: str | None,
+    attempt: int,
+) -> dict[str, Any]:
+    """Build LangChain invoke config for LangSmith filters."""
+    meta = {key: value for key, value in (metadata or {}).items() if value is not None}
+    meta["attempt"] = attempt + 1
+    tag_list = list(tags or [])
+    if attempt > 0 and "retry" not in tag_list:
+        tag_list.append("retry")
+    config: dict[str, Any] = {"metadata": meta, "tags": tag_list}
+    if run_name:
+        config["run_name"] = run_name
+    return config
 
 
 def _backoff_seconds(failed_attempt: int) -> float:

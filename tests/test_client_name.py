@@ -62,7 +62,7 @@ def test_infer_client_uses_llm_reply_when_present_in_text(monkeypatch) -> None: 
     monkeypatch.setattr(
         cn,
         "ask_client_name",
-        lambda title, raw_text: "Harvard",
+        lambda title, raw_text, **_kwargs: "Harvard",
     )
     name = infer_client_name(
         "Driving Global Science Education with Harvard’s LabXchange",
@@ -72,7 +72,7 @@ def test_infer_client_uses_llm_reply_when_present_in_text(monkeypatch) -> None: 
 
 
 def test_infer_client_empty_when_llm_says_none(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr(cn, "ask_client_name", lambda title, raw_text: "")
+    monkeypatch.setattr(cn, "ask_client_name", lambda title, raw_text, **_kwargs: "")
     name = infer_client_name(
         "Enhancing Retail Analytics with Advanced Data Services",
         "The client needed to extract retail data from many websites.",
@@ -81,7 +81,9 @@ def test_infer_client_empty_when_llm_says_none(monkeypatch) -> None:  # noqa: AN
 
 
 def test_infer_client_rejects_llm_hallucination(monkeypatch) -> None:  # noqa: ANN001
-    monkeypatch.setattr(cn, "ask_client_name", lambda title, raw_text: "Acme Corp")
+    monkeypatch.setattr(
+        cn, "ask_client_name", lambda title, raw_text, **_kwargs: "Acme Corp"
+    )
     name = infer_client_name(
         "Enhancing Retail Analytics with Advanced Data Services",
         "The client needed to extract retail data from many websites.",
@@ -96,9 +98,20 @@ def test_ask_client_name_calls_complete_json(monkeypatch, tmp_path) -> None:  # 
         calls.append(kwargs)
         return {"client_name": "KAYAK"}
 
-    def real_ask(title: str, raw_text: str) -> str:
+    def real_ask(
+        title: str,
+        raw_text: str,
+        *,
+        deck_id: str | None = None,
+        section: str | None = None,
+    ) -> str:
         message = build_client_message(title=title, raw_text=raw_text)
-        payload = cn._cached_complete(message)
+        payload = cn._cached_complete(
+            message,
+            deck_id=deck_id,
+            section=section,
+            study_title=title.strip(),
+        )
         value = payload.get("client_name", "")
         return "" if value is None else str(value).strip()
 
@@ -108,6 +121,8 @@ def test_ask_client_name_calls_complete_json(monkeypatch, tmp_path) -> None:  # 
     reply = cn.ask_client_name(
         "Elevating KAYAK's Mobile Experience",
         "KAYAK needed a faster mobile app.",
+        deck_id="deck-9",
+        section="Mobile App Development",
     )
     assert reply == "KAYAK"
     assert len(calls) == 1
@@ -116,6 +131,12 @@ def test_ask_client_name_calls_complete_json(monkeypatch, tmp_path) -> None:  # 
     assert "KAYAK needed a faster mobile app." in calls[0]["user"]
     assert calls[0]["schema"] == cn.CLIENT_JSON_SCHEMA
     assert calls[0]["role"] == "structure"
+    assert calls[0]["tags"] == ["deck_ingest", "client_name"]
+    assert calls[0]["metadata"]["pipeline"] == "deck_ingest"
+    assert calls[0]["metadata"]["kind"] == "client_name"
+    assert calls[0]["metadata"]["deck_id"] == "deck-9"
+    assert calls[0]["metadata"]["study_title"] == "Elevating KAYAK's Mobile Experience"
+    assert calls[0]["metadata"]["section"] == "Mobile App Development"
     # Second call hits cache and does not call complete_json again.
     assert cn.ask_client_name(
         "Elevating KAYAK's Mobile Experience",

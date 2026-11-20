@@ -18,9 +18,11 @@ class _Structured:
     def __init__(self, results: list[object]) -> None:
         self.results = results
         self.messages: list[object] = []
+        self.configs: list[object] = []
 
-    def invoke(self, messages: object) -> object:
+    def invoke(self, messages: object, config: object = None, **_kwargs: object) -> object:
         self.messages.append(messages)
+        self.configs.append(config)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -167,3 +169,46 @@ def test_other_errors_are_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
         complete_json(system="sys", user="user", schema=SCHEMA, role="structure")
 
     assert len(model.structured.messages) == 1
+
+
+def test_passes_langsmith_tags_and_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    _retry_clock: list[float],
+) -> None:
+    model = _patch_model(
+        monkeypatch,
+        [_Fail("json_validate_failed"), REPLY],
+    )
+
+    payload = complete_json(
+        system="sys",
+        user="user",
+        schema=SCHEMA,
+        role="structure",
+        tags=["deck_ingest", "outline"],
+        metadata={
+            "pipeline": "deck_ingest",
+            "kind": "outline",
+            "deck_id": "abc",
+            "slide_start": 11,
+            "slide_end": 12,
+        },
+        run_name="outline slides 11–12",
+    )
+
+    assert payload == REPLY
+    first, second = model.structured.configs
+    assert first == {
+        "metadata": {
+            "pipeline": "deck_ingest",
+            "kind": "outline",
+            "deck_id": "abc",
+            "slide_start": 11,
+            "slide_end": 12,
+            "attempt": 1,
+        },
+        "tags": ["deck_ingest", "outline"],
+        "run_name": "outline slides 11–12",
+    }
+    assert second["metadata"]["attempt"] == 2
+    assert "retry" in second["tags"]

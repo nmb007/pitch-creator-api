@@ -163,7 +163,7 @@ def test_wrapped_title(tmp_path) -> None:  # noqa: ANN001
     _write_at(slide, 1.2, ["Enabling Brands With", "Real-Time Store-Level Insights"], size=24)
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         blocks = _block_rows(message)
         first = _find(blocks, "Enabling Brands With")
         second = _find(blocks, "Real-Time Store-Level Insights")
@@ -321,7 +321,7 @@ def test_outline_retries_once_when_section_and_headings_lack_title(
 
     calls = {"n": 0}
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         calls["n"] += 1
         blocks = _block_rows(message)
         items: list[dict[str, Any]] = []
@@ -384,7 +384,7 @@ def test_outline_skips_title_miss_retry_without_headings(
 
     calls = {"n": 0}
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         calls["n"] += 1
         blocks = _block_rows(message)
         return _outline_payload(blocks, title_ids=set(), section_ids={_find(blocks, "Data Scraping")})
@@ -417,7 +417,7 @@ def test_joined_travel_divider_becomes_section_not_study(tmp_path) -> None:  # n
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         blocks = _block_rows(message)
         items: list[dict[str, Any]] = []
         for number, _slide, text in blocks:
@@ -477,7 +477,7 @@ def test_parse_discards_invalid_outline_then_commits(
 
     calls = {"n": 0}
 
-    def fake_outline(message: str) -> dict[str, Any]:
+    def fake_outline(message: str, **_kwargs: Any) -> dict[str, Any]:
         calls["n"] += 1
         blocks = _block_rows(message)
         good = _outline_payload(
@@ -765,7 +765,7 @@ def test_cover_beats_general_format_section(tmp_path, monkeypatch) -> None:  # n
     )
     presentation.save(path)
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         blocks = _block_rows(message)
         items: list[dict[str, Any]] = []
         for number, _slide, text in blocks:
@@ -1025,7 +1025,7 @@ def _outline_complete(
 ) -> Any:
     section_names = sections or set()
 
-    def complete(message: str) -> dict[str, Any]:
+    def complete(message: str, **_kwargs: Any) -> dict[str, Any]:
         blocks = _block_rows(message)
         title_ids: set[int] = set()
         section_ids: set[int] = set()

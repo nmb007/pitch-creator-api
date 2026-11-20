@@ -31,7 +31,7 @@ from src.decks.validate import (
     outline_from_payload,
 )
 
-StructureFn = Callable[[str], dict[str, Any]]
+StructureFn = Callable[..., dict[str, Any]]
 
 __all__ = [
     "FIELD_NAMES",
@@ -133,8 +133,14 @@ def _collect_outline(
         accepted_payload: dict[str, Any] | None = None
         last_error = ""
         rejected: list[dict[str, Any]] = []
+        outline_trace = {
+            "deck_id": str(log_id) if log_id is not None else None,
+            "slide_start": slide_nos[0],
+            "slide_end": slide_nos[-1],
+            "outline_call": model_calls,
+        }
         for attempt in range(retry_limit + 1):
-            payload = complete(message)
+            payload = complete(message, **outline_trace)
             try:
                 accepted = outline_from_payload(
                     payload,
@@ -182,7 +188,7 @@ def _collect_outline(
                     "payload": _debug_payload(accepted_payload),
                 }
             )
-            retry_payload = complete(message)
+            retry_payload = complete(message, **outline_trace, title_miss=True)
             try:
                 retried = outline_from_payload(
                     retry_payload,
@@ -361,6 +367,7 @@ def _drafts_from_labeled(
             span_items=span_items,
             blocks_by_number=blocks_by_number,
             slides_by_number=slides_by_number,
+            deck_id=str(log_id) if log_id is not None else None,
         )
         drafts.append(draft)
         if log_id is not None:

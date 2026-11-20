@@ -39,16 +39,32 @@ def test_structure_outline_caches_only_after_commit(
     }
     calls = {"n": 0}
 
-    def fake_complete_json(**_kwargs: Any) -> dict[str, Any]:
+    seen: list[dict[str, Any]] = []
+
+    def fake_complete_json(**kwargs: Any) -> dict[str, Any]:
         calls["n"] += 1
+        seen.append(kwargs)
         return payload
 
     monkeypatch.setattr(sm, "complete_json", fake_complete_json)
     message = "Current section: General\nBlocks:\n1. slide=1 text=Title One"
 
-    assert sm.structure_outline(message) == payload
+    assert sm.structure_outline(
+        message,
+        deck_id="deck-1",
+        slide_start=11,
+        slide_end=12,
+        outline_call=6,
+    ) == payload
     assert calls["n"] == 1
     assert list(tmp_path.glob("*.json")) == []
+    assert seen[0]["tags"] == ["deck_ingest", "outline"]
+    assert seen[0]["metadata"]["pipeline"] == "deck_ingest"
+    assert seen[0]["metadata"]["kind"] == "outline"
+    assert seen[0]["metadata"]["deck_id"] == "deck-1"
+    assert seen[0]["metadata"]["slide_start"] == 11
+    assert seen[0]["metadata"]["slide_end"] == 12
+    assert seen[0]["run_name"] == "outline slides 11–12"
 
     sm.commit_outline_cache(message, payload)
     cached = list(tmp_path.glob("*.json"))

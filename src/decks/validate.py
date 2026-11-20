@@ -148,6 +148,7 @@ def draft_from_labeled_span(
     span_items: list[dict[str, Any]],
     blocks_by_number: dict[int, TextBlock],
     slides_by_number: dict[int, SlideBlocks],
+    deck_id: str | None = None,
 ) -> StudyDraft:
     """Copy Docling text into fields from labeled blocks in one study span."""
     field_ids: dict[str, list[int]] = {name: [] for name in FIELD_NAMES}
@@ -227,7 +228,12 @@ def draft_from_labeled_span(
     return StudyDraft(
         section=section or "General",
         title=title,
-        client_name=infer_client_name(title, raw_text),
+        client_name=infer_client_name(
+            title,
+            raw_text,
+            deck_id=deck_id,
+            section=section or "General",
+        ),
         raw_text=raw_text,
         background=fields["background"],
         challenge=fields["challenge"],

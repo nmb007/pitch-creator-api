@@ -122,7 +122,7 @@ def _stub_client_name_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         "Rizq",
     )
 
-    def fake_ask(title: str, raw_text: str) -> str:
+    def fake_ask(title: str, raw_text: str, **_kwargs: object) -> str:
         source = f"{title}\n{raw_text}"
         lowered = source.lower()
         if "the client" in lowered and not any(name.lower() in lowered for name in known):

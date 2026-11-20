@@ -65,10 +65,21 @@ def build_client_message(*, title: str, raw_text: str) -> str:
     )
 
 
-def ask_client_name(title: str, raw_text: str) -> str:
+def ask_client_name(
+    title: str,
+    raw_text: str,
+    *,
+    deck_id: str | None = None,
+    section: str | None = None,
+) -> str:
     """Call the structure LLM once for this study. Returns the raw name string."""
     message = build_client_message(title=title, raw_text=raw_text)
-    payload = _cached_complete(message)
+    payload = _cached_complete(
+        message,
+        deck_id=deck_id,
+        section=section,
+        study_title=title.strip(),
+    )
     value = payload.get("client_name", "")
     if value is None:
         return ""
@@ -87,14 +98,26 @@ def accept_client_name(reply: str, source: str) -> str | None:
     return line
 
 
-def infer_client_name(title: str, raw_text: str) -> str | None:
+def infer_client_name(
+    title: str,
+    raw_text: str,
+    *,
+    deck_id: str | None = None,
+    section: str | None = None,
+) -> str | None:
     """Ask the LLM, then accept only a name already present in title + raw_text."""
     source = "\n".join(part for part in (title, raw_text) if part and part.strip())
-    reply = ask_client_name(title, raw_text)
+    reply = ask_client_name(title, raw_text, deck_id=deck_id, section=section)
     return accept_client_name(reply, source)
 
 
-def _cached_complete(user_message: str) -> dict[str, Any]:
+def _cached_complete(
+    user_message: str,
+    *,
+    deck_id: str | None = None,
+    section: str | None = None,
+    study_title: str | None = None,
+) -> dict[str, Any]:
     cache_path = _cache_path_for(user_message)
     if cache_path.exists():
         logger.info("Structure model (client): cache hit (%s…)", cache_path.stem[:12])
@@ -105,11 +128,28 @@ def _cached_complete(user_message: str) -> dict[str, Any]:
         model_name_for("structure"),
         cache_path.stem[:12],
     )
+    tags = ["deck_ingest", "client_name"]
+    metadata: dict[str, Any] = {
+        "pipeline": "deck_ingest",
+        "kind": "client_name",
+        "deck_id": str(deck_id) if deck_id is not None else None,
+        "section": section,
+        "study_title": study_title,
+        "model": model_name_for("structure"),
+        "provider": provider_for("structure"),
+    }
+    run_name = "client_name"
+    if study_title:
+        short = study_title if len(study_title) <= 60 else f"{study_title[:57]}..."
+        run_name = f"client_name {short}"
     payload = complete_json(
         system=CLIENT_SYSTEM_PROMPT,
         user=user_message,
         schema=CLIENT_JSON_SCHEMA,
         role="structure",
+        tags=tags,
+        metadata=metadata,
+        run_name=run_name,
     )
     if not isinstance(payload, dict):
         raise ValueError("Client model JSON must be an object")
