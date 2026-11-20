@@ -139,7 +139,7 @@ def mark_failed(deck_id: UUID) -> None:
 
 def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft]) -> None:
     seen: set[tuple[str, str]] = set()
-    pending: list[tuple[Study, StudyVersion, list[str], str]] = []
+    pending: list[tuple[Study, StudyVersion, list[str], str | None]] = []
     embed_inputs: list[str] = []
     skipped = 0
     changed = 0
@@ -181,7 +181,12 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
             current.is_current = False
             session.add(current)
         chunks = chunk_texts(draft)
-        summary = f"{draft.section}\n{draft.title}\n{draft.raw_text[:SUMMARY_CHARS]}"
+        # Empty raw_text: keep a zero summary vector and do not invent chunk text.
+        summary = (
+            f"{draft.section}\n{draft.title}\n{draft.raw_text[:SUMMARY_CHARS]}"
+            if draft.raw_text.strip()
+            else None
+        )
         version = StudyVersion(
             study_id=study.id,
             deck_import_id=deck.id,
@@ -201,7 +206,8 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
         session.flush()
         _save_images(session, version, draft)
         pending.append((study, version, chunks, summary))
-        embed_inputs.append(summary)
+        if summary is not None:
+            embed_inputs.append(summary)
         embed_inputs.extend(chunks)
 
     ingest_info(
@@ -217,10 +223,11 @@ def persist_drafts(session: Session, deck: DeckImport, drafts: list[StudyDraft])
         )
         vectors = embed_texts(embed_inputs)
         cursor = 0
-        for _study, version, chunks, _summary in pending:
-            version.summary_embedding = vectors[cursor]
-            cursor += 1
-            session.add(version)
+        for _study, version, chunks, summary in pending:
+            if summary is not None:
+                version.summary_embedding = vectors[cursor]
+                cursor += 1
+                session.add(version)
             for position, text in enumerate(chunks, start=1):
                 session.add(
                     StudyChunk(

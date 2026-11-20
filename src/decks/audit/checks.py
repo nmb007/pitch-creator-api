@@ -671,11 +671,45 @@ def _chunk_checks(item: StoredStudy, key: str) -> list[CheckResult]:
 def _embedding_checks(item: StoredStudy, key: str) -> list[CheckResult]:
     study = item.study
     version = item.version
-    summary = f"{study.section}\n{study.title}\n{(version.raw_text or '')[:SUMMARY_CHARS]}"
-    chunk_texts = [chunk.text for chunk in sorted(item.chunks, key=lambda row: row.position)]
-    vectors = embed_texts([summary, *chunk_texts])
+    raw = (version.raw_text or "").strip()
     results: list[CheckResult] = []
     summary_vector = version.summary_embedding
+    stored_chunks = sorted(item.chunks, key=lambda row: row.position)
+
+    if not raw:
+        if _is_zero(summary_vector):
+            results.append(
+                CheckResult(
+                    "match",
+                    "summary_embedding is zero because raw_text is empty",
+                    key,
+                )
+            )
+        else:
+            results.append(
+                CheckResult(
+                    "incorrect",
+                    "summary_embedding should be zero when raw_text is empty",
+                    key,
+                )
+            )
+        if not stored_chunks:
+            results.append(
+                CheckResult("match", "no chunks stored because study body is empty", key)
+            )
+        else:
+            results.append(
+                CheckResult(
+                    "incorrect",
+                    f"{len(stored_chunks)} chunks stored; expected 0 for empty body",
+                    key,
+                )
+            )
+        return results
+
+    summary = f"{study.section}\n{study.title}\n{raw[:SUMMARY_CHARS]}"
+    chunk_texts = [chunk.text for chunk in stored_chunks]
+    vectors = embed_texts([summary, *chunk_texts])
     if _is_zero(summary_vector):
         results.append(CheckResult("incorrect", "summary_embedding is a zero vector", key))
     elif len(summary_vector) != 384:
@@ -692,7 +726,7 @@ def _embedding_checks(item: StoredStudy, key: str) -> list[CheckResult]:
         results.append(
             CheckResult("incorrect", "summary_embedding does not match a fresh embedding", key)
         )
-    for index, chunk in enumerate(sorted(item.chunks, key=lambda row: row.position)):
+    for index, chunk in enumerate(stored_chunks):
         expected = vectors[index + 1]
         if _is_zero(chunk.embedding):
             results.append(

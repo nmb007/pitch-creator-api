@@ -19,10 +19,10 @@ class _ChunkSource(Protocol):
 
 
 def chunk_texts(source: _ChunkSource) -> list[str]:
-    """Non-empty fields in field order, otherwise raw_text, otherwise a placeholder."""
+    """Non-empty fields in field order, otherwise raw_text. Empty when there is no body."""
     parts = [getattr(source, name) for name in FIELD_NAMES if getattr(source, name)]
-    if not parts:
-        parts = [source.raw_text] if source.raw_text else ["Untitled study"]
+    if not parts and source.raw_text:
+        parts = [source.raw_text]
     return parts
 
 

@@ -918,8 +918,10 @@ def _seed_study(  # noqa: ANN001
                 )
                 if spec.get(name)
             ]
-            chunk_texts = field_parts or ([version_raw] if version_raw else ["Untitled study"])
-            vectors = _fake_embed([summary, *chunk_texts])
+            chunk_texts = field_parts or ([version_raw] if version_raw else [])
+            embed_summary = bool(version_raw.strip()) if isinstance(version_raw, str) else bool(version_raw)
+            embed_inputs = ([summary] if embed_summary else []) + chunk_texts
+            vectors = _fake_embed(embed_inputs) if embed_inputs else []
             version = StudyVersion(
                 study_id=study.id,
                 deck_import_id=deck.id,
@@ -932,19 +934,20 @@ def _seed_study(  # noqa: ANN001
                 outcome=spec.get("outcome") or "",
                 tech_stack=spec.get("tech_stack") or "",
                 raw_text=version_raw,
-                summary_embedding=vectors[0],
+                summary_embedding=vectors[0] if embed_summary else [0.0] * 384,
                 is_current=True,
             )
             session.add(version)
             session.flush()
             if not drop_chunks:
+                offset = 1 if embed_summary else 0
                 for position, text in enumerate(chunk_texts, start=1):
                     session.add(
                         StudyChunk(
                             study_version_id=version.id,
                             position=position,
                             text=text,
-                            embedding=vectors[position],
+                            embedding=vectors[offset + position - 1],
                         )
                     )
             if image_sha256 is not None and spec["title"] == title:
