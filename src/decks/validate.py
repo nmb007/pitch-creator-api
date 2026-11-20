@@ -31,6 +31,7 @@ __all__ = (
     "draft_from_labeled_span",
     "infer_client_name",
     "is_banner",
+    "is_format_legend",
     "is_section_header",
     "outline_from_payload",
     "study_slide_numbers",
@@ -358,8 +359,16 @@ NON_CONTENT_LABELS = frozenset(
         "what we did?",
     }
 )
+# Format / General Format legend slides end the prior study without changing section.
+FORMAT_LEGEND_LABELS = frozenset({"format", "general format"})
 # Back-compat alias for older imports.
 FAKE_SECTION_LABELS = NON_CONTENT_LABELS
+
+
+def is_format_legend(text: str) -> bool:
+    """True for Format / General Format legend chrome (not a real category)."""
+    return _normalize_label(text) in FORMAT_LEGEND_LABELS
+
 
 # Cover and category dividers. Always section, even when the model says otherwise.
 # Also banners so they stay out of study raw_text.

@@ -27,6 +27,7 @@ from src.decks.validate import (
     StructureValidationError,
     draft_from_labeled_span,
     is_banner,
+    is_format_legend,
     is_section_header,
     outline_from_payload,
 )
@@ -295,7 +296,7 @@ def _drafts_from_labeled(
     ordered = sorted(labeled, key=lambda item: int(item["block_id"]))
     by_id = {int(item["block_id"]): item for item in ordered}
     # Attach loose paragraphs to the open heading; skip header notes.
-    _attach_orphan_paragraphs(ordered)
+    _attach_orphan_paragraphs(ordered, blocks_by_number)
 
     drafts: list[StudyDraft] = []
     section = "General"
@@ -356,8 +357,20 @@ def _drafts_from_labeled(
         while span_end < len(ordered):
             nxt = ordered[span_end]
             nxt_type = nxt["block_type"]
-            if nxt_type in {"title", "section"}:
+            nxt_text = blocks_by_number[int(nxt["block_id"])].text
+            # Format legend slides close the study but must not become the section.
+            if is_format_legend(nxt_text):
                 break
+            if nxt_type == "title":
+                break
+            if nxt_type == "section":
+                # Running category chrome repeats the current section on every
+                # slide. Only a different section name ends this study.
+                nxt_name = nxt_text.strip()
+                if nxt_name and nxt_name != section:
+                    break
+                span_end += 1
+                continue
             span_end += 1
         span_items = ordered[span_start:span_end]
         draft = draft_from_labeled_span(
@@ -389,9 +402,18 @@ def _drafts_from_labeled(
     return drafts
 
 
-def _attach_orphan_paragraphs(ordered: list[dict[str, Any]]) -> None:
-    """Join top-level paragraphs to the open heading until the next title/section."""
+def _attach_orphan_paragraphs(
+    ordered: list[dict[str, Any]],
+    blocks_by_number: dict[int, TextBlock],
+) -> None:
+    """Join top-level paragraphs to the open heading until the next title/section.
+
+    A repeated same-name section divider is running slide chrome, not a new
+    category. Keep the open heading so outcome/tech continuations on the next
+    slide still attach.
+    """
     open_heading: dict[str, Any] | None = None
+    current_section: str | None = None
     nested: set[int] = set()
     for item in ordered:
         if item["block_type"] == "heading":
@@ -399,7 +421,18 @@ def _attach_orphan_paragraphs(ordered: list[dict[str, Any]]) -> None:
     for item in ordered:
         block_type = item["block_type"]
         block_id = int(item["block_id"])
-        if block_type in {"title", "section"}:
+        if block_type == "title":
+            open_heading = None
+            continue
+        if is_format_legend(blocks_by_number[block_id].text):
+            # Legend chrome ends the open field without changing section.
+            open_heading = None
+            continue
+        if block_type == "section":
+            name = blocks_by_number[block_id].text.strip()
+            if current_section is not None and name == current_section:
+                continue
+            current_section = name or current_section
             open_heading = None
             continue
         if block_type == "header_note":

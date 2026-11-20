@@ -21,7 +21,7 @@ from src.decks.models import DeckImport, Study, StudyChunk, StudyImage, StudyVer
 from src.decks.parse import section_for
 from src.decks.service import SUMMARY_CHARS, deck_path, storage_root
 from src.decks.client_name import infer_client_name
-from src.decks.validate import build_raw_text, is_banner
+from src.decks.validate import build_raw_text, is_banner, is_format_legend
 from src.embeddings import embed_texts
 
 COSINE_THRESHOLD = 0.999
@@ -292,6 +292,15 @@ def _span_blocks(
             continue
         if next_start is None or mark_block < next_start:
             next_start = mark_block
+        break
+    # Format legend chrome also ends the study (without changing section).
+    for block in blocks:
+        if block.number <= last_title:
+            continue
+        if not is_format_legend(block.text):
+            continue
+        if next_start is None or block.number < next_start:
+            next_start = block.number
         break
     span: list[TextBlock] = []
     for block in blocks:

@@ -735,6 +735,187 @@ def test_section_slide_sets_section(tmp_path, monkeypatch) -> None:  # noqa: ANN
     assert drafts[0].slide_numbers == [2]
 
 
+def test_repeated_same_section_keeps_tech_stack_continuation(tmp_path) -> None:  # noqa: ANN001
+    """Category chrome repeated on slide 2 must not truncate outcome/tech_stack."""
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    first = presentation.slides.add_slide(blank)
+    _write(
+        first,
+        [
+            "Edly Case Studies",
+            "Building a Scalable LMS for Tiered Learning at Toastmasters",
+            "The Challenge",
+            "Toastmasters needed a modern LMS for tiered learning.",
+            "The Approach",
+            "Edly rebuilt the platform on Open edX.",
+            "The Outcome",
+            "The LMS redevelopment was successfully delivered within Toastmasters' ambitious",
+        ],
+    )
+    second = presentation.slides.add_slide(blank)
+    _write(
+        second,
+        [
+            "Edly Case Studies",
+            "migration timeline. The new platform improved engagement.",
+            "Technology Stack",
+            "The solution used JavaScript, ReactJS, and Typescript.",
+        ],
+    )
+    third = presentation.slides.add_slide(blank)
+    _write(
+        third,
+        [
+            "Edly Case Studies",
+            "Personalized Learner Support at Scale: The ilmX Approach",
+            "The Challenge",
+            "ilmX needed multi-channel learner support.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Building a Scalable LMS for Tiered Learning at Toastmasters",
+                "Personalized Learner Support at Scale: The ilmX Approach",
+            },
+            sections={"Edly Case Studies"},
+        ),
+    )
+    assert [draft.title for draft in drafts] == [
+        "Building a Scalable LMS for Tiered Learning at Toastmasters",
+        "Personalized Learner Support at Scale: The ilmX Approach",
+    ]
+    toastmasters = drafts[0]
+    assert toastmasters.section == "Edly Case Studies"
+    assert toastmasters.slide_numbers == [1, 2]
+    assert "ambitious" in toastmasters.outcome
+    assert "migration timeline" in toastmasters.outcome
+    assert "JavaScript, ReactJS, and Typescript" in toastmasters.tech_stack
+    assert "migration timeline" in toastmasters.raw_text
+    assert "JavaScript, ReactJS" in toastmasters.raw_text
+    assert "ilmX" not in toastmasters.raw_text
+    assert drafts[1].slide_numbers == [3]
+    assert "ilmX needed multi-channel" in drafts[1].challenge
+
+
+def test_different_section_still_ends_study(tmp_path) -> None:  # noqa: ANN001
+    """A real category change must still close the prior study before the next title."""
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    first = presentation.slides.add_slide(blank)
+    _write(
+        first,
+        [
+            "Edly Case Studies",
+            "Scaling Privacy Education Through a Multi-Tier LMS",
+            "The Challenge",
+            "Straits Interactive needed a multi-tier LMS.",
+            "Technology Stack",
+            "Python and Django powered the LMS.",
+        ],
+    )
+    second = presentation.slides.add_slide(blank)
+    _write(
+        second,
+        [
+            "Managed Hosting",
+            "Global Learning with Custom Open edX Platform",
+            "The Challenge",
+            "Wikimedia Classroom needed multilingual hosting.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Scaling Privacy Education Through a Multi-Tier LMS",
+                "Global Learning with Custom Open edX Platform",
+            },
+            sections={"Edly Case Studies", "Managed Hosting"},
+        ),
+    )
+    assert len(drafts) == 2
+    assert drafts[0].section == "Edly Case Studies"
+    assert drafts[0].slide_numbers == [1]
+    assert "Python and Django" in drafts[0].tech_stack
+    assert "Wikimedia" not in drafts[0].raw_text
+    assert drafts[1].section == "Managed Hosting"
+    assert drafts[1].slide_numbers == [2]
+    assert "multilingual hosting" in drafts[1].challenge
+
+
+def test_format_legend_ends_study_without_changing_section(tmp_path) -> None:  # noqa: ANN001
+    """Format legend closes the prior study; section stays the real category."""
+    path = tmp_path / "deck.pptx"
+    presentation = Presentation()
+    blank = presentation.slide_layouts[6]
+    first = presentation.slides.add_slide(blank)
+    _write(
+        first,
+        [
+            "Arbisoft Case Studies",
+            "Business Travel: Arbisoft’s Partnership with Lola",
+            "The Challenge",
+            "Lola needed mobile and web apps for business travel.",
+            "Technology Stack",
+            "Tech Stack: Python, React, Elasticsearch",
+        ],
+    )
+    legend = presentation.slides.add_slide(blank)
+    _write(
+        legend,
+        [
+            "Format",
+            "The Challenge",
+            "The Approach",
+            "The Outcome",
+            "Technology Stack",
+            "www.arbisoft.com",
+        ],
+    )
+    third = presentation.slides.add_slide(blank)
+    _write(
+        third,
+        [
+            "Cross platform App Case Studies",
+            "Bringing Xiangqi to a Global Audience with a Scalable, Cross-Platform Solution",
+            "The Challenge",
+            "Xiangqi needed a global multi-language platform.",
+        ],
+    )
+    presentation.save(path)
+
+    drafts = parse_pptx(
+        path,
+        complete=_outline_complete(
+            titles={
+                "Business Travel: Arbisoft’s Partnership with Lola",
+                "Bringing Xiangqi to a Global Audience with a Scalable, Cross-Platform Solution",
+            },
+            sections={"Arbisoft Case Studies", "Cross platform App Case Studies"},
+        ),
+    )
+    assert len(drafts) == 2
+    lola = drafts[0]
+    assert lola.section == "Arbisoft Case Studies"
+    assert lola.slide_numbers == [1]
+    assert "Python, React, Elasticsearch" in lola.tech_stack
+    assert "The Approach" not in lola.raw_text
+    assert "Xiangqi" not in lola.raw_text
+    xiangqi = drafts[1]
+    assert xiangqi.section == "Cross platform App Case Studies"
+    assert xiangqi.slide_numbers == [3]
+    assert "multi-language platform" in xiangqi.challenge
+
+
 def test_cover_beats_general_format_section(tmp_path, monkeypatch) -> None:  # noqa: ANN001
     """Cover banner becomes the section even when the model marks General Format."""
     from src.config import settings
