@@ -136,11 +136,12 @@ async def list_pitches(user: CurrentUserDep) -> list[PitchResponse]:
 async def get_pitch(pitch_id: UUID, user: CurrentUserDep) -> PitchResponse:
     try:
         pitch = await asyncify(pitch_service.get_pitch)(pitch_id, user.id)
+        matched = await asyncify(pitch_service.has_matches)(pitch_id)
     except NotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pitch not found"
         ) from exc
-    return _pitch_response(pitch)
+    return _pitch_response(pitch, has_matches=matched)
 
 
 @router.get("/{pitch_id}/matches", summary="Ranked studies and reasons")
@@ -216,10 +217,11 @@ async def _one_input(request: Request) -> tuple[str | None, str | None, bytes | 
     )
 
 
-def _pitch_response(pitch) -> PitchResponse:  # noqa: ANN001
+def _pitch_response(pitch, *, has_matches: bool = False) -> PitchResponse:  # noqa: ANN001
     return PitchResponse(
         id=pitch.id,
         title=pitch.title,
         created_at=pitch.created_at,
         updated_at=pitch.updated_at,
+        has_matches=has_matches,
     )

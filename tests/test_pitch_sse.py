@@ -105,5 +105,6 @@ async def test_get_pitch_has_title_not_status(client) -> None:  # noqa: ANN001
     assert pitch.status_code == 200
     body = pitch.json()
     assert body["title"] == "Hello there"
+    assert body["has_matches"] is False
     assert "status" not in body
     assert "prospect_text" not in body

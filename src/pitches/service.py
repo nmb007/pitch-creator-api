@@ -280,6 +280,14 @@ def list_pitches(user_id: UUID) -> list[Pitch]:
         return pitches
 
 
+def has_matches(pitch_id: UUID) -> bool:
+    with get_sync_session() as session:
+        row = session.exec(
+            select(PitchMatch.id).where(PitchMatch.pitch_id == pitch_id).limit(1)
+        ).first()
+        return row is not None
+
+
 def list_matches(pitch_id: UUID, user_id: UUID) -> list[dict]:
     with get_sync_session() as session:
         pitch = session.get(Pitch, pitch_id)

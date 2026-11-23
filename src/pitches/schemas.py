@@ -11,6 +11,7 @@ class PitchResponse(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    has_matches: bool = False
 
 
 class MatchResponse(BaseModel):
