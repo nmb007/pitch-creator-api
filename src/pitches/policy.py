@@ -14,6 +14,7 @@ GateDecision = Literal["allow_tools", "refuse", "clarify"]
 HISTORY_LIMIT = 10
 
 _GATE_SCHEMA: dict[str, Any] = {
+    "title": "PitchPolicyGate",
     "type": "object",
     "properties": {
         "decision": {
