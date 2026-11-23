@@ -13,8 +13,7 @@ class Pitch(UUIDModel, TimestampModel, table=True):
     __tablename__ = "pitches"
 
     created_by: UUID = Field(foreign_key="users.id")
-    status: str = Field(default="collecting", max_length=32)
-    prospect_text: str = Field(default="")
+    title: str = Field(default="", max_length=200)
     updated_at: datetime = Field(
         default_factory=utcnow,
         sa_type=DateTime(timezone=True),
