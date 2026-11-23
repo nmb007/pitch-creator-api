@@ -155,7 +155,6 @@ def _study_rows(shortlist: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "section": item["section"],
                 "title": item["title"],
                 "reason": _fallback(quote) or f"Related to: {item['title']}",
-                "source_quote": quote[:4000],
             }
         )
     return rows

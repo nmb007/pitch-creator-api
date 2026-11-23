@@ -219,9 +219,11 @@ async def stream_turn(
                     if text:
                         yield format_sse("assistant.delta", {"text": text})
                 elif kind == "on_tool_end":
-                    matches = list_matches_public(pitch_id)
-                    if matches:
-                        yield format_sse("matches", {"items": matches})
+                    # pitch_matches are written only by recommend_pitch_studies
+                    if event.get("name") == "recommend_pitch_studies":
+                        matches = list_matches_public(pitch_id)
+                        if matches:
+                            yield format_sse("matches", {"items": matches})
         except Exception as exc:
             if exc.__class__.__name__ == "GraphInterrupt":
                 interrupted = True
