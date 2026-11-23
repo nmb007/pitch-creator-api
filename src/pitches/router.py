@@ -126,6 +126,12 @@ async def post_message(
     return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
+@router.get("", summary="List pitches for the current user")
+async def list_pitches(user: CurrentUserDep) -> list[PitchResponse]:
+    pitches = await asyncify(pitch_service.list_pitches)(user.id)
+    return [_pitch_response(pitch) for pitch in pitches]
+
+
 @router.get("/{pitch_id}", summary="Pitch thread")
 async def get_pitch(pitch_id: UUID, user: CurrentUserDep) -> PitchResponse:
     try:

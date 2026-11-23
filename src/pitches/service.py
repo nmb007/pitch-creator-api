@@ -266,6 +266,20 @@ def get_pitch(pitch_id: UUID, user_id: UUID) -> Pitch:
         return pitch
 
 
+def list_pitches(user_id: UUID) -> list[Pitch]:
+    with get_sync_session() as session:
+        pitches = list(
+            session.exec(
+                select(Pitch)
+                .where(Pitch.created_by == user_id)
+                .order_by(Pitch.updated_at.desc())
+            ).all()
+        )
+        for pitch in pitches:
+            session.expunge(pitch)
+        return pitches
+
+
 def list_matches(pitch_id: UUID, user_id: UUID) -> list[dict]:
     with get_sync_session() as session:
         pitch = session.get(Pitch, pitch_id)
