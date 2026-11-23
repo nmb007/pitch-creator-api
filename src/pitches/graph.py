@@ -39,7 +39,6 @@ If tools return no studies, say so and ask for a clearer topic or brief."""
 
 class PitchState(TypedDict, total=False):
     pitch_id: str
-    turn_text: str
     gate: Literal["allow_tools", "refuse", "clarify"]
     gate_reply: str
     messages: Annotated[list[BaseMessage], add_messages]
@@ -50,14 +49,12 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
     tools = pitch_tools()
     tool_node = ToolNode(tools)
     builder = StateGraph(PitchState)
-    builder.add_node("load_turn", load_turn)
     builder.add_node("policy_gate", policy_gate)
     builder.add_node("gate_reply", gate_reply)
     builder.add_node("agent", make_agent_node(tools))
     builder.add_node("tools", make_tools_node(tool_node))
     builder.add_node("maybe_wait", maybe_wait)
-    builder.add_edge(START, "load_turn")
-    builder.add_edge("load_turn", "policy_gate")
+    builder.add_edge(START, "policy_gate")
     builder.add_conditional_edges(
         "policy_gate",
         route_after_gate,
@@ -104,18 +101,6 @@ def make_tools_node(tool_node: ToolNode):  # noqa: ANN201
         }
 
     return run_tools
-
-
-def load_turn(state: PitchState) -> dict[str, Any]:
-    """Append this turn's user message onto checkpointed LangGraph messages."""
-    turn = (state.get("turn_text") or "").strip()
-    if not turn:
-        raise ValueError("Pitch turn text is required")
-    return {
-        "turn_text": turn,
-        "messages": [HumanMessage(content=turn)],
-        "awaiting_selection": False,
-    }
 
 
 def policy_gate(state: PitchState) -> dict[str, Any]:

@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
+from langchain_core.messages import HumanMessage
 from sqlmodel import select
 
 from src import runtime
@@ -175,6 +176,9 @@ async def stream_turn(
     turn_text: str,
     emit_ready: bool = False,
 ) -> AsyncIterator[str]:
+    turn = turn_text.strip()
+    if not turn:
+        raise EmptyInputError()
     key = str(pitch_id)
     async with _guard:
         if key in _active:
@@ -206,7 +210,7 @@ async def stream_turn(
         }
         state_in = {
             "pitch_id": key,
-            "turn_text": turn_text,
+            "messages": [HumanMessage(content=turn)],
             "awaiting_selection": False,
         }
         interrupted = False
@@ -218,12 +222,14 @@ async def stream_turn(
                     text = _chunk_text(chunk)
                     if text:
                         yield format_sse("assistant.delta", {"text": text})
-                elif kind == "on_tool_end":
+                elif (
+                    kind == "on_tool_end"
+                    and event.get("name") == "recommend_pitch_studies"
+                ):
                     # pitch_matches are written only by recommend_pitch_studies
-                    if event.get("name") == "recommend_pitch_studies":
-                        matches = list_matches_public(pitch_id)
-                        if matches:
-                            yield format_sse("matches", {"items": matches})
+                    matches = list_matches_public(pitch_id)
+                    if matches:
+                        yield format_sse("matches", {"items": matches})
         except Exception as exc:
             if exc.__class__.__name__ == "GraphInterrupt":
                 interrupted = True
