@@ -41,8 +41,8 @@ def browse_studies(query: str) -> str:
     if len(cleaned) < MIN_QUERY_CHARS:
         return json.dumps({"ok": False, "error": "Query too short", "studies": []})
     shortlist = _retrieve(cleaned, candidate_limit=BROWSE_LIMIT, final_limit=BROWSE_LIMIT)
-    pitch_id = UUID(current_pitch_id.get())
-    rows = _persist_matches(pitch_id, cleaned, shortlist, explain=False)
+    # Browse is informational only — do not write pitch_matches.
+    rows = _study_rows(shortlist)
     awaiting_selection.set(False)
     return json.dumps({"ok": True, "mode": "browse", "studies": rows})
 
@@ -60,7 +60,7 @@ def recommend_pitch_studies(brief: str) -> str:
         rerank_chunks=True,
     )
     pitch_id = UUID(current_pitch_id.get())
-    rows = _persist_matches(pitch_id, cleaned, shortlist, explain=True)
+    rows = _persist_matches(pitch_id, cleaned, shortlist)
     awaiting_selection.set(True)
     return json.dumps({"ok": True, "mode": "pitch", "studies": rows})
 
@@ -144,23 +144,35 @@ def _closest_chunks(session, version_id, literal: str) -> tuple[list[dict[str, A
     return ordered, 1.0
 
 
+def _study_rows(shortlist: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for rank, item in enumerate(shortlist, start=1):
+        quote = "\n\n".join(chunk["text"] for chunk in item["chunks"]).strip()
+        rows.append(
+            {
+                "rank": rank,
+                "study_id": item["study_id"],
+                "section": item["section"],
+                "title": item["title"],
+                "reason": _fallback(quote) or f"Related to: {item['title']}",
+                "source_quote": quote[:4000],
+            }
+        )
+    return rows
+
+
 def _persist_matches(
     pitch_id: UUID,
     query: str,
     shortlist: list[dict[str, Any]],
-    *,
-    explain: bool,
 ) -> list[dict[str, Any]]:
     with get_sync_session() as session:
         session.execute(delete(PitchMatch).where(PitchMatch.pitch_id == pitch_id))
         rows: list[dict[str, Any]] = []
         for rank, item in enumerate(shortlist, start=1):
             quote = "\n\n".join(chunk["text"] for chunk in item["chunks"]).strip()
-            if explain:
-                drafted = _draft_reason(query, item["title"], quote, str(pitch_id))
-                reason = ground_reason(drafted, quote) or _fallback(quote)
-            else:
-                reason = _fallback(quote) or f"Related to: {item['title']}"
+            drafted = _draft_reason(query, item["title"], quote, str(pitch_id))
+            reason = ground_reason(drafted, quote) or _fallback(quote)
             session.add(
                 PitchMatch(
                     pitch_id=pitch_id,
