@@ -89,13 +89,9 @@ def _sync_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[Session]:
 
 @pytest.fixture(autouse=True)
 def _stub_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_start(pitch_id) -> None:  # noqa: ANN001
-        del pitch_id
-
     def fake_enqueue(deck_id) -> None:  # noqa: ANN001
         del deck_id
 
-    monkeypatch.setattr(pitch_service, "start_search", fake_start)
     monkeypatch.setattr(deck_service, "enqueue_ingest", fake_enqueue)
 
 

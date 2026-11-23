@@ -3,13 +3,12 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PitchResponse(BaseModel):
     id: UUID
-    status: str
-    prospect_text: str
+    title: str
     created_at: datetime
     updated_at: datetime
 
@@ -29,3 +28,7 @@ class MessageResponse(BaseModel):
     role: str
     body: str
     created_at: datetime
+
+
+class FollowUpMessage(BaseModel):
+    message: str = Field(min_length=1)

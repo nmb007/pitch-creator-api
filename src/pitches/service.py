@@ -1,9 +1,11 @@
-"""Create a pitch from one message or one file, then run search."""
+"""Create pitches and stream conversational turns over SSE."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import UUID
 
@@ -14,21 +16,40 @@ from src.config import settings
 from src.database import get_sync_session
 from src.decks.models import Study
 from src.exceptions import NotFoundError
+from src.models import utcnow
 from src.pitches.exceptions import EmptyInputError
 from src.pitches.extract import ALLOWED_EXTENSIONS, extract_text
 from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage
 
 logger = logging.getLogger(__name__)
 
+TITLE_MAX = 80
+
 _active: set[str] = set()
 _guard = asyncio.Lock()
+
+
+def thread_title(*, kind: str, body: str | None, file_name: str | None) -> str:
+    if kind == "file" and file_name:
+        return file_name[:200]
+    text = (body or "").strip().replace("\n", " ")
+    if len(text) <= TITLE_MAX:
+        return text[:200]
+    return text[: TITLE_MAX - 1].rstrip() + "…"
 
 
 def create_from_message(*, user_id: UUID, message: str) -> Pitch:
     text = message.strip()
     if not text:
         raise EmptyInputError()
-    return _insert(user_id=user_id, kind="message", body=text, file_name=None, storage_key=None)
+    return _insert(
+        user_id=user_id,
+        kind="message",
+        body=text,
+        file_name=None,
+        storage_key=None,
+        title=thread_title(kind="message", body=text, file_name=None),
+    )
 
 
 def create_from_file(*, user_id: UUID, file_name: str, data: bytes) -> Pitch:
@@ -52,6 +73,7 @@ def create_from_file(*, user_id: UUID, file_name: str, data: bytes) -> Pitch:
         body=extracted,
         file_name=safe_name,
         storage_key=None,
+        title=thread_title(kind="file", body=extracted, file_name=safe_name),
     )
     folder = Path(settings.STORAGE_DIR) / "prospects" / str(pitch.id)
     folder.mkdir(parents=True, exist_ok=True)
@@ -65,6 +87,24 @@ def create_from_file(*, user_id: UUID, file_name: str, data: bytes) -> Pitch:
     return pitch
 
 
+def append_user_message(*, pitch_id: UUID, user_id: UUID, message: str) -> PitchMessage:
+    text = message.strip()
+    if not text:
+        raise EmptyInputError()
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        row = PitchMessage(pitch_id=pitch_id, role="user", body=text)
+        pitch.updated_at = utcnow()
+        session.add(row)
+        session.add(pitch)
+        session.commit()
+        session.refresh(row)
+        session.expunge(row)
+        return row
+
+
 def _insert(
     *,
     user_id: UUID,
@@ -72,9 +112,10 @@ def _insert(
     body: str | None,
     file_name: str | None,
     storage_key: str | None,
+    title: str,
 ) -> Pitch:
     with get_sync_session() as session:
-        pitch = Pitch(created_by=user_id, status="collecting", prospect_text="")
+        pitch = Pitch(created_by=user_id, title=title[:200])
         session.add(pitch)
         session.flush()
         session.add(
@@ -93,7 +134,47 @@ def _insert(
         return pitch
 
 
-async def start_search(pitch_id: UUID) -> None:
+def format_sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def materialize_opening_turn(pitch_id: UUID) -> PitchMessage:
+    """Ensure the first user message exists from pitch_inputs; return it."""
+    with get_sync_session() as session:
+        existing = session.exec(
+            select(PitchMessage)
+            .where(PitchMessage.pitch_id == pitch_id)
+            .where(PitchMessage.role == "user")
+            .order_by(PitchMessage.created_at)
+        ).first()
+        if existing is not None:
+            session.expunge(existing)
+            return existing
+        incoming = session.exec(select(PitchInput).where(PitchInput.pitch_id == pitch_id)).first()
+        if incoming is None or not incoming.body:
+            raise EmptyInputError()
+        if incoming.kind == "file" and incoming.file_name:
+            label = f"Uploaded {incoming.file_name}\n\n{incoming.body}"
+        else:
+            label = incoming.body
+        row = PitchMessage(pitch_id=pitch_id, role="user", body=label)
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is not None:
+            pitch.updated_at = utcnow()
+            session.add(pitch)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        session.expunge(row)
+        return row
+
+
+async def stream_turn(
+    *,
+    pitch_id: UUID,
+    turn_text: str,
+    emit_ready: bool = False,
+) -> AsyncIterator[str]:
     key = str(pitch_id)
     async with _guard:
         if key in _active:
@@ -101,27 +182,71 @@ async def start_search(pitch_id: UUID) -> None:
 
             raise ConflictError()
         _active.add(key)
-    logger.info("Starting search for pitch %s", key)
     try:
+        if emit_ready:
+            yield format_sse("ready", {"pitch_id": key})
+        user_payload = _latest_user_message(pitch_id)
+        if user_payload is not None:
+            yield format_sse("message.user", user_payload)
         graph = runtime.graph
         if graph is None:
-            raise RuntimeError("Search graph is not ready")
+            body = (
+                "I can help with Arbisoft case studies and pitch shortlists. "
+                "What should we look for?"
+            )
+            message = _store_assistant(pitch_id, body)
+            yield format_sse("assistant.delta", {"text": body})
+            yield format_sse("assistant.message", message)
+            yield format_sse("done", {})
+            return
         config = {
             "configurable": {"thread_id": key},
             "metadata": {"pitch_id": key, "model": settings.GROQ_MODEL},
             "tags": [key, settings.GROQ_MODEL],
         }
+        state_in = {
+            "pitch_id": key,
+            "turn_text": turn_text,
+            "awaiting_selection": False,
+        }
+        interrupted = False
         try:
-            await graph.ainvoke(
-                {"pitch_id": key, "shortlist": []},
-                config=config,
-            )
+            async for event in graph.astream_events(state_in, config=config, version="v2"):
+                kind = event.get("event")
+                if kind == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    text = _chunk_text(chunk)
+                    if text:
+                        yield format_sse("assistant.delta", {"text": text})
+                elif kind == "on_tool_end":
+                    matches = list_matches_public(pitch_id)
+                    if matches:
+                        yield format_sse("matches", {"items": matches})
         except Exception as exc:
             if exc.__class__.__name__ == "GraphInterrupt":
+                interrupted = True
+            else:
+                logger.exception("Turn failed for pitch %s", key)
+                yield format_sse("error", {"detail": "The assistant turn failed."})
+                yield format_sse("done", {})
                 return
-            raise
+        assistant = _latest_assistant_message(pitch_id)
+        if assistant is not None:
+            yield format_sse("assistant.message", assistant)
+        matches = list_matches_public(pitch_id)
+        if matches:
+            yield format_sse("matches", {"items": matches})
+        if interrupted:
+            yield format_sse("interrupted", {"pitch_id": key})
+        yield format_sse("done", {})
     finally:
         _active.discard(key)
+
+
+async def start_search(pitch_id: UUID) -> None:
+    opening = materialize_opening_turn(pitch_id)
+    async for _ in stream_turn(pitch_id=pitch_id, turn_text=opening.body, emit_ready=False):
+        pass
 
 
 def get_pitch(pitch_id: UUID, user_id: UUID) -> Pitch:
@@ -138,6 +263,11 @@ def list_matches(pitch_id: UUID, user_id: UUID) -> list[dict]:
         pitch = session.get(Pitch, pitch_id)
         if pitch is None or pitch.created_by != user_id:
             raise NotFoundError()
+        return list_matches_public(pitch_id)
+
+
+def list_matches_public(pitch_id: UUID) -> list[dict]:
+    with get_sync_session() as session:
         rows = session.exec(
             select(PitchMatch, Study)
             .join(Study, Study.id == PitchMatch.study_id)
@@ -173,3 +303,74 @@ def list_messages(pitch_id: UUID, user_id: UUID) -> list[PitchMessage]:
         for message in messages:
             session.expunge(message)
         return messages
+
+
+def _latest_user_message(pitch_id: UUID) -> dict | None:
+    with get_sync_session() as session:
+        message = session.exec(
+            select(PitchMessage)
+            .where(PitchMessage.pitch_id == pitch_id)
+            .where(PitchMessage.role == "user")
+            .order_by(PitchMessage.created_at.desc())
+        ).first()
+        if message is None:
+            return None
+        return {
+            "id": message.id,
+            "role": message.role,
+            "body": message.body,
+            "created_at": message.created_at,
+        }
+
+
+def _latest_assistant_message(pitch_id: UUID) -> dict | None:
+    with get_sync_session() as session:
+        message = session.exec(
+            select(PitchMessage)
+            .where(PitchMessage.pitch_id == pitch_id)
+            .where(PitchMessage.role == "assistant")
+            .order_by(PitchMessage.created_at.desc())
+        ).first()
+        if message is None:
+            return None
+        return {
+            "id": message.id,
+            "role": message.role,
+            "body": message.body,
+            "created_at": message.created_at,
+        }
+
+
+def _store_assistant(pitch_id: UUID, body: str) -> dict:
+    with get_sync_session() as session:
+        row = PitchMessage(pitch_id=pitch_id, role="assistant", body=body)
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is not None:
+            pitch.updated_at = utcnow()
+            session.add(pitch)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return {
+            "id": row.id,
+            "role": row.role,
+            "body": row.body,
+            "created_at": row.created_at,
+        }
+
+
+def _chunk_text(chunk: object) -> str:
+    if chunk is None:
+        return ""
+    content = getattr(chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text") or ""))
+        return "".join(parts)
+    return ""

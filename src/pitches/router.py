@@ -1,16 +1,17 @@
-"""Pitch HTTP routes for Week 1 search."""
+"""Pitch HTTP routes: create/follow-up as SSE, plus hydrate endpoints."""
 
 from uuid import UUID
 
 from asyncer import asyncify
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 
 from src.exceptions import ConflictError, NotFoundError
 from src.pitches import service as pitch_service
 from src.pitches.dependencies import CurrentUserDep
 from src.pitches.exceptions import BothInputsError, EmptyInputError
 from src.pitches.extract import ALLOWED_EXTENSIONS
-from src.pitches.schemas import MatchResponse, MessageResponse, PitchResponse
+from src.pitches.schemas import FollowUpMessage, MatchResponse, MessageResponse, PitchResponse
 from src.schemas import NOT_AUTHENTICATED_RESPONSE, error_responses
 
 router = APIRouter(prefix="/pitches", tags=["pitches"], responses=NOT_AUTHENTICATED_RESPONSE)
@@ -21,15 +22,20 @@ _INPUT_ERRORS = error_responses(
         "Send a message or a file, not both",
     ),
 )
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 @router.post(
     "",
     status_code=status.HTTP_201_CREATED,
-    summary="Start a pitch from one message or one file",
+    summary="Start a pitch thread and stream the first assistant turn",
     responses=_INPUT_ERRORS,
 )
-async def create_pitch(request: Request, user: CurrentUserDep) -> PitchResponse:
+async def create_pitch(request: Request, user: CurrentUserDep) -> StreamingResponse:
     message, file_name, data = await _one_input(request)
     try:
         if data is not None and file_name is not None:
@@ -43,8 +49,7 @@ async def create_pitch(request: Request, user: CurrentUserDep) -> PitchResponse:
                 user_id=user.id,
                 message=message or "",
             )
-        await pitch_service.start_search(pitch.id)
-        pitch = await asyncify(pitch_service.get_pitch)(pitch.id, user.id)
+        opening = await asyncify(pitch_service.materialize_opening_turn)(pitch.id)
     except BothInputsError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -55,15 +60,73 @@ async def create_pitch(request: Request, user: CurrentUserDep) -> PitchResponse:
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Send a message or a .txt, .pdf, or .docx file",
         ) from exc
-    except ConflictError as exc:
+
+    async def events():
+        try:
+            async for chunk in pitch_service.stream_turn(
+                pitch_id=pitch.id,
+                turn_text=opening.body,
+                emit_ready=True,
+            ):
+                yield chunk
+        except ConflictError:
+            yield pitch_service.format_sse(
+                "error", {"detail": "A turn is already running for this pitch"}
+            )
+            yield pitch_service.format_sse("done", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        status_code=status.HTTP_201_CREATED,
+        headers=_SSE_HEADERS,
+    )
+
+
+@router.post(
+    "/{pitch_id}/messages",
+    summary="Send a follow-up message and stream the assistant turn",
+    responses=_INPUT_ERRORS,
+)
+async def post_message(
+    pitch_id: UUID,
+    payload: FollowUpMessage,
+    user: CurrentUserDep,
+) -> StreamingResponse:
+    try:
+        row = await asyncify(pitch_service.append_user_message)(
+            pitch_id=pitch_id,
+            user_id=user.id,
+            message=payload.message,
+        )
+    except NotFoundError as exc:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="A search is already running for this pitch",
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pitch not found"
         ) from exc
-    return _pitch_response(pitch)
+    except EmptyInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Send a message or a .txt, .pdf, or .docx file",
+        ) from exc
+
+    async def events():
+        try:
+            async for chunk in pitch_service.stream_turn(
+                pitch_id=pitch_id,
+                turn_text=row.body,
+                emit_ready=False,
+            ):
+                yield chunk
+        except ConflictError:
+            yield pitch_service.format_sse(
+                "error", {"detail": "A turn is already running for this pitch"}
+            )
+            yield pitch_service.format_sse("done", {})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
 
-@router.get("/{pitch_id}", summary="Pitch status")
+@router.get("/{pitch_id}", summary="Pitch thread")
 async def get_pitch(pitch_id: UUID, user: CurrentUserDep) -> PitchResponse:
     try:
         pitch = await asyncify(pitch_service.get_pitch)(pitch_id, user.id)
@@ -150,8 +213,7 @@ async def _one_input(request: Request) -> tuple[str | None, str | None, bytes | 
 def _pitch_response(pitch) -> PitchResponse:  # noqa: ANN001
     return PitchResponse(
         id=pitch.id,
-        status=pitch.status,
-        prospect_text=pitch.prospect_text,
+        title=pitch.title,
         created_at=pitch.created_at,
         updated_at=pitch.updated_at,
     )
