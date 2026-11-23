@@ -1,207 +1,164 @@
-"""Search graph. Week 1 runs through explain and then waits for a selection."""
+"""Conversational pitch graph: policy gate, then tools agent."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 from uuid import UUID
 
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
 from langgraph.types import interrupt
-from sqlalchemy import text
-from sqlmodel import select
 
-from src.config import settings
 from src.database import get_sync_session
-from src.decks.models import StudyChunk
-from src.embeddings import embed_texts
 from src.llm import chat_model
 from src.models import utcnow
-from src.pitches.grounding import ground_reason
-from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage
+from src.pitches.models import Pitch, PitchMessage
+from src.pitches.policy import decide_gate
+from src.pitches.tools import awaiting_selection, current_pitch_id, pitch_tools
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_LIMIT = 15
-CHUNK_LIMIT = 3
+AGENT_SYSTEM = """You are Arbisoft's case-study and pitch assistant.
+You help users find relevant case studies and recommend studies for a prospect pitch.
+Use browse_studies for topic/capability searches.
+Use recommend_pitch_studies when the user describes a prospect, RFP, or asks for a pitch shortlist.
+Do not invent studies. Rely on tool results. Keep replies concise and professional.
+If tools return no studies, say so and ask for a clearer topic or brief."""
 
 
 class PitchState(TypedDict, total=False):
     pitch_id: str
-    shortlist: list[dict[str, Any]]
+    turn_text: str
+    gate: Literal["allow_tools", "refuse", "clarify"]
+    gate_reply: str
+    messages: Annotated[list[BaseMessage], add_messages]
+    awaiting_selection: bool
 
 
 def compile_graph(checkpointer):  # noqa: ANN001, ANN202
+    tools = pitch_tools()
+    tool_node = ToolNode(tools)
     builder = StateGraph(PitchState)
-    builder.add_node("read_input", read_input)
-    builder.add_node("retrieve", retrieve)
-    builder.add_node("explain", explain)
-    builder.add_node("wait_for_selection", wait_for_selection)
-    builder.add_edge(START, "read_input")
-    builder.add_edge("read_input", "retrieve")
-    builder.add_edge("retrieve", "explain")
-    builder.add_edge("explain", "wait_for_selection")
-    builder.add_edge("wait_for_selection", END)
+    builder.add_node("load_turn", load_turn)
+    builder.add_node("policy_gate", policy_gate)
+    builder.add_node("gate_reply", gate_reply)
+    builder.add_node("agent", make_agent_node(tools))
+    builder.add_node("tools", make_tools_node(tool_node))
+    builder.add_node("persist_assistant", persist_assistant)
+    builder.add_node("maybe_wait", maybe_wait)
+    builder.add_edge(START, "load_turn")
+    builder.add_edge("load_turn", "policy_gate")
+    builder.add_conditional_edges(
+        "policy_gate",
+        route_after_gate,
+        {"gate_reply": "gate_reply", "agent": "agent"},
+    )
+    builder.add_edge("gate_reply", END)
+    builder.add_conditional_edges(
+        "agent",
+        tools_condition,
+        {"tools": "tools", END: "persist_assistant"},
+    )
+    builder.add_edge("tools", "agent")
+    builder.add_edge("persist_assistant", "maybe_wait")
+    builder.add_edge("maybe_wait", END)
     return builder.compile(checkpointer=checkpointer)
 
 
-def read_input(state: PitchState) -> dict[str, Any]:
-    pitch_id = UUID(state["pitch_id"])
-    with get_sync_session() as session:
-        pitch = session.get(Pitch, pitch_id)
-        incoming = session.exec(select(PitchInput).where(PitchInput.pitch_id == pitch_id)).first()
-        if pitch is None or incoming is None or not incoming.body:
-            raise ValueError("Pitch is missing its starting input")
-        pitch.prospect_text = incoming.body
-        pitch.updated_at = utcnow()
-        label = incoming.body
-        if incoming.kind == "file" and incoming.file_name:
-            label = f"Uploaded {incoming.file_name}\n\n{incoming.body}"
-        session.add(PitchMessage(pitch_id=pitch_id, role="user", body=label))
-        session.add(pitch)
-        session.commit()
-    return {}
+def make_agent_node(tools: list[Any]):  # noqa: ANN201
+    def agent(state: PitchState) -> dict[str, Any]:
+        model = chat_model().bind_tools(tools)
+        history = list(state.get("messages") or [])
+        if not history or not isinstance(history[0], SystemMessage):
+            history = [SystemMessage(content=AGENT_SYSTEM), *history]
+        reply = model.invoke(history)
+        return {"messages": [reply]}
+
+    return agent
 
 
-def retrieve(state: PitchState) -> dict[str, Any]:
-    pitch_id = UUID(state["pitch_id"])
-    with get_sync_session() as session:
-        pitch = session.get(Pitch, pitch_id)
-        if pitch is None or not pitch.prospect_text:
-            return {"shortlist": []}
-        vector = embed_texts([pitch.prospect_text])[0]
-        literal = _vector_literal(vector)
-        rows = session.execute(
-            text(
-                """
-                SELECT sv.id AS version_id, s.id AS study_id, s.title, s.section
-                FROM study_versions AS sv
-                JOIN studies AS s ON s.id = sv.study_id
-                WHERE sv.is_current AND s.status = 'active'
-                ORDER BY sv.summary_embedding <=> CAST(:embedding AS vector)
-                LIMIT :limit
-                """
-            ),
-            {"embedding": literal, "limit": SUMMARY_LIMIT},
-        ).all()
-        shortlist: list[dict[str, Any]] = []
-        for row in rows:
-            chunks = session.execute(
-                text(
-                    """
-                    SELECT position, text
-                    FROM study_chunks
-                    WHERE study_version_id = :version_id
-                    ORDER BY embedding <=> CAST(:embedding AS vector)
-                    LIMIT :limit
-                    """
-                ),
-                {
-                    "version_id": row.version_id,
-                    "embedding": literal,
-                    "limit": CHUNK_LIMIT,
-                },
-            ).all()
-            ordered = sorted(
-                [{"position": chunk.position, "text": chunk.text} for chunk in chunks],
-                key=lambda item: item["position"],
-            )
-            if not ordered:
-                stored = session.exec(
-                    select(StudyChunk)
-                    .where(StudyChunk.study_version_id == row.version_id)
-                    .order_by(StudyChunk.position)
-                ).all()
-                ordered = [
-                    {"position": chunk.position, "text": chunk.text}
-                    for chunk in stored[:CHUNK_LIMIT]
-                ]
-            shortlist.append(
-                {
-                    "study_id": str(row.study_id),
-                    "version_id": str(row.version_id),
-                    "title": row.title,
-                    "section": row.section,
-                    "chunks": ordered,
-                }
-            )
-    return {"shortlist": shortlist}
+def make_tools_node(tool_node: ToolNode):  # noqa: ANN201
+    def run_tools(state: PitchState) -> dict[str, Any]:
+        token = current_pitch_id.set(state["pitch_id"])
+        awaiting_selection.set(False)
+        try:
+            result = tool_node.invoke(state)
+        finally:
+            current_pitch_id.reset(token)
+        flagged = awaiting_selection.get()
+        return {
+            "messages": result.get("messages", []),
+            "awaiting_selection": bool(flagged or state.get("awaiting_selection")),
+        }
+
+    return run_tools
 
 
-def explain(state: PitchState) -> dict[str, Any]:
-    pitch_id = UUID(state["pitch_id"])
-    with get_sync_session() as session:
-        pitch = session.get(Pitch, pitch_id)
-        if pitch is None:
-            return {}
-        prospect = pitch.prospect_text
-        lines: list[str] = []
-        for rank, item in enumerate(state.get("shortlist") or [], start=1):
-            quote = "\n\n".join(chunk["text"] for chunk in item["chunks"]).strip()
-            drafted = _draft_reason(prospect, item["title"], quote, str(pitch_id))
-            reason = ground_reason(drafted, quote) or _fallback(quote)
-            session.add(
-                PitchMatch(
-                    pitch_id=pitch_id,
-                    study_id=UUID(item["study_id"]),
-                    study_version_id=UUID(item["version_id"]),
-                    rank=rank,
-                    reason=reason,
-                    source_quote=quote[:4000],
-                    selected=False,
-                )
-            )
-            lines.append(f"{rank}. {item['section']} — {item['title']}: {reason}")
-        if lines:
-            body = "Closest studies:\n" + "\n".join(lines)
-        else:
-            body = "No active studies were close to this prospect."
-        session.add(PitchMessage(pitch_id=pitch_id, role="assistant", body=body))
-        pitch.status = "selecting"
-        pitch.updated_at = utcnow()
-        session.add(pitch)
-        session.commit()
-    return {}
+def load_turn(state: PitchState) -> dict[str, Any]:
+    turn = (state.get("turn_text") or "").strip()
+    if not turn:
+        raise ValueError("Pitch turn text is required")
+    return {
+        "turn_text": turn,
+        "messages": [HumanMessage(content=turn)],
+        "awaiting_selection": False,
+    }
 
 
-def wait_for_selection(state: PitchState) -> dict[str, Any]:
-    interrupt({"pitch_id": state["pitch_id"]})
-    return {}
+def policy_gate(state: PitchState) -> dict[str, Any]:
+    decision, reply = decide_gate(state.get("turn_text") or "", pitch_id=state["pitch_id"])
+    return {"gate": decision, "gate_reply": reply}
 
 
-def _draft_reason(prospect: str, title: str, quote: str, pitch_id: str) -> str:
-    if not quote:
-        return ""
-    if not settings.GROQ_API_KEY:
-        return _fallback(quote)
-    prompt = (
-        "Explain why this case study might fit the prospect. "
-        "Use only facts that appear in the passages. One or two sentences.\n\n"
-        f"Prospect:\n{prospect[:4000]}\n\n"
-        f"Study: {title}\n\n"
-        f"Passages:\n{quote[:6000]}"
+def route_after_gate(state: PitchState) -> str:
+    if state.get("gate") == "allow_tools":
+        return "agent"
+    return "gate_reply"
+
+
+def gate_reply(state: PitchState) -> dict[str, Any]:
+    body = (state.get("gate_reply") or "").strip() or (
+        "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
     )
-    try:
-        reply = chat_model().invoke(
-            prompt,
-            config={
-                "metadata": {"pitch_id": pitch_id, "model": settings.GROQ_MODEL},
-                "tags": [pitch_id, settings.GROQ_MODEL],
-            },
-        )
-    except Exception:
-        logger.exception("Groq reason failed for pitch %s", pitch_id)
-        return _fallback(quote)
-    content = reply.content
-    if isinstance(content, str):
-        return content.strip()
-    return str(content).strip()
+    pitch_id = UUID(state["pitch_id"])
+    with get_sync_session() as session:
+        session.add(PitchMessage(pitch_id=pitch_id, role="assistant", body=body))
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is not None:
+            pitch.updated_at = utcnow()
+            session.add(pitch)
+        session.commit()
+    return {"messages": [AIMessage(content=body)]}
 
 
-def _fallback(quote: str) -> str:
-    sentence = quote.strip().split("\n", maxsplit=1)[0]
-    return sentence[:400]
+def persist_assistant(state: PitchState) -> dict[str, Any]:
+    messages = list(state.get("messages") or [])
+    last_ai: AIMessage | None = None
+    for message in reversed(messages):
+        if isinstance(message, AIMessage) and message.content and not message.tool_calls:
+            last_ai = message
+            break
+    if last_ai is None:
+        return {}
+    body = last_ai.content if isinstance(last_ai.content, str) else str(last_ai.content)
+    body = body.strip()
+    if not body:
+        return {}
+    pitch_id = UUID(state["pitch_id"])
+    with get_sync_session() as session:
+        session.add(PitchMessage(pitch_id=pitch_id, role="assistant", body=body))
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is not None:
+            pitch.updated_at = utcnow()
+            session.add(pitch)
+        session.commit()
+    return {}
 
 
-def _vector_literal(values: list[float]) -> str:
-    return "[" + ",".join(f"{value:.8f}" for value in values) + "]"
+def maybe_wait(state: PitchState) -> dict[str, Any]:
+    if state.get("awaiting_selection"):
+        interrupt({"pitch_id": state["pitch_id"]})
+    return {}
