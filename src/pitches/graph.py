@@ -36,11 +36,14 @@ Use the conversation history: short follow-ups like "give me the last 5" refer t
 Do not invent studies. Rely on tool results. Keep replies concise and professional.
 If tools return no studies, say so and ask for a clearer topic or brief."""
 
+_FALLBACK_GATE_REPLY = (
+    "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
+)
+
 
 class PitchState(TypedDict, total=False):
     pitch_id: str
     gate: Literal["allow_tools", "refuse", "clarify"]
-    gate_reply: str
     messages: Annotated[list[BaseMessage], add_messages]
     awaiting_selection: bool
 
@@ -50,7 +53,6 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
     tool_node = ToolNode(tools)
     builder = StateGraph(PitchState)
     builder.add_node("policy_gate", policy_gate)
-    builder.add_node("gate_reply", gate_reply)
     builder.add_node("agent", make_agent_node(tools))
     builder.add_node("tools", make_tools_node(tool_node))
     builder.add_node("maybe_wait", maybe_wait)
@@ -58,9 +60,8 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
     builder.add_conditional_edges(
         "policy_gate",
         route_after_gate,
-        {"gate_reply": "gate_reply", "agent": "agent"},
+        {"agent": "agent", END: END},
     )
-    builder.add_edge("gate_reply", END)
     builder.add_conditional_edges(
         "agent",
         tools_condition,
@@ -108,22 +109,18 @@ def policy_gate(state: PitchState) -> dict[str, Any]:
         pitch_id=state["pitch_id"],
         messages=state.get("messages") or [],
     )
-    return {"gate": decision, "gate_reply": reply}
+    if decision == "allow_tools":
+        return {"gate": decision}
+    body = reply.strip() or _FALLBACK_GATE_REPLY
+    message = AIMessage(content=body)
+    _persist_state_message(UUID(state["pitch_id"]), message)
+    return {"gate": decision, "messages": [message]}
 
 
 def route_after_gate(state: PitchState) -> str:
     if state.get("gate") == "allow_tools":
         return "agent"
-    return "gate_reply"
-
-
-def gate_reply(state: PitchState) -> dict[str, Any]:
-    body = (state.get("gate_reply") or "").strip() or (
-        "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
-    )
-    message = AIMessage(content=body)
-    _persist_state_message(UUID(state["pitch_id"]), message)
-    return {"messages": [message]}
+    return END
 
 
 def maybe_wait(state: PitchState) -> dict[str, Any]:
