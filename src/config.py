@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     RETRIEVAL_KEYWORD_K: int = 40
     RETRIEVAL_FUSED_POOL: int = 40
     RETRIEVAL_MAX_CHUNKS_PER_STUDY: int = 3
-    RETRIEVAL_STUDY_LIMIT: int = 5
+    RETRIEVAL_STUDY_LIMIT: int = 15
     RETRIEVAL_RRF_K: int = 60
     RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"
     # Query+chunk token budget BAAI recommends for v2-m3. Query is char-capped below.

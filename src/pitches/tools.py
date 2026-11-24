@@ -62,7 +62,9 @@ def browse_studies(query: str) -> str:
     shortlist = _retrieve(cleaned)
     rows = _study_rows(shortlist)
     awaiting_selection.set(False)
-    return json.dumps({"ok": True, "mode": "browse", "studies": rows})
+    return json.dumps(
+        {"ok": True, "mode": "browse", "study_count": len(rows), "studies": rows}
+    )
 
 
 @tool
@@ -78,7 +80,9 @@ def recommend_pitch_studies(brief: str) -> str:
     pitch_id = UUID(current_pitch_id.get())
     rows = _persist_matches(pitch_id, cleaned, shortlist)
     awaiting_selection.set(True)
-    return json.dumps({"ok": True, "mode": "pitch", "studies": rows})
+    return json.dumps(
+        {"ok": True, "mode": "pitch", "study_count": len(rows), "studies": rows}
+    )
 
 
 def pitch_tools() -> list[Any]:
