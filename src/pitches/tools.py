@@ -10,38 +10,56 @@ from uuid import UUID
 
 from langchain_core.tools import tool
 from sqlalchemy import text
-from sqlmodel import delete, select
+from sqlmodel import delete
 
 from src.config import settings
 from src.database import get_sync_session
-from src.decks.models import StudyChunk
 from src.embeddings import embed_texts
 from src.llm import chat_model
 from src.pitches.grounding import ground_reason
 from src.pitches.models import PitchMatch
+from src.pitches.retrieval import (
+    cap_chunks_per_study,
+    chunk_part_name,
+    escape_like,
+    group_studies_by_best_chunk,
+    rrf_merge,
+)
+from src.rerank import rerank_texts
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_CANDIDATES = 15
-BROWSE_LIMIT = 5
-PITCH_LIMIT = 5
-CHUNK_LIMIT = 3
-# Cosine distance via <=> ; lower is closer. Tunable against the live deck.
-MAX_DISTANCE = 0.55
 MIN_QUERY_CHARS = 8
 
 current_pitch_id: ContextVar[str] = ContextVar("current_pitch_id")
 awaiting_selection: ContextVar[bool] = ContextVar("awaiting_selection", default=False)
 
+_CHUNK_SELECT = """
+    sc.id AS chunk_id,
+    sc.text AS chunk_text,
+    sv.id AS version_id,
+    s.id AS study_id,
+    s.title AS title,
+    s.section AS category,
+    sv.background AS background,
+    sv.challenge AS challenge,
+    sv.approach AS approach,
+    sv.solution AS solution,
+    sv.outcome AS outcome,
+    sv.tech_stack AS tech_stack
+"""
+
 
 @tool
 def browse_studies(query: str) -> str:
-    """Find Arbisoft case studies matching a topic or capability (not a full prospect pitch)."""
+    """Find Arbisoft case studies matching a topic or capability (not a full prospect pitch).
+
+    Results include winning passage chunks. Base every claim on those chunks.
+    """
     cleaned = query.strip()
     if len(cleaned) < MIN_QUERY_CHARS:
         return json.dumps({"ok": False, "error": "Query too short", "studies": []})
-    shortlist = _retrieve(cleaned, candidate_limit=BROWSE_LIMIT, final_limit=BROWSE_LIMIT)
-    # Browse is informational only — do not write pitch_matches.
+    shortlist = _retrieve(cleaned)
     rows = _study_rows(shortlist)
     awaiting_selection.set(False)
     return json.dumps({"ok": True, "mode": "browse", "studies": rows})
@@ -49,16 +67,14 @@ def browse_studies(query: str) -> str:
 
 @tool
 def recommend_pitch_studies(brief: str) -> str:
-    """Recommend the best case studies for a prospect brief or RFP-style pitch request."""
+    """Recommend the best case studies for a prospect brief or RFP-style pitch request.
+
+    Results include winning passage chunks. Base every claim on those chunks.
+    """
     cleaned = brief.strip()
     if len(cleaned) < MIN_QUERY_CHARS:
         return json.dumps({"ok": False, "error": "Brief too short", "studies": []})
-    shortlist = _retrieve(
-        cleaned,
-        candidate_limit=SUMMARY_CANDIDATES,
-        final_limit=PITCH_LIMIT,
-        rerank_chunks=True,
-    )
+    shortlist = _retrieve(cleaned)
     pitch_id = UUID(current_pitch_id.get())
     rows = _persist_matches(pitch_id, cleaned, shortlist)
     awaiting_selection.set(True)
@@ -69,92 +85,114 @@ def pitch_tools() -> list[Any]:
     return [browse_studies, recommend_pitch_studies]
 
 
-def _retrieve(
-    query: str,
-    *,
-    candidate_limit: int,
-    final_limit: int,
-    rerank_chunks: bool = False,
-) -> list[dict[str, Any]]:
+def _retrieve(query: str) -> list[dict[str, Any]]:
     vector = embed_texts([query])[0]
     literal = _vector_literal(vector)
     with get_sync_session() as session:
-        rows = session.execute(
+        vector_rows = session.execute(
             text(
-                """
-                SELECT sv.id AS version_id, s.id AS study_id, s.title, s.section,
-                       (sv.summary_embedding <=> CAST(:embedding AS vector)) AS distance
-                FROM study_versions AS sv
-                JOIN studies AS s ON s.id = sv.study_id
-                WHERE sv.is_current AND s.status = 'active'
-                ORDER BY sv.summary_embedding <=> CAST(:embedding AS vector)
+                f"""
+                SELECT {_CHUNK_SELECT},
+                       (sc.embedding <=> CAST(:embedding AS vector)) AS distance
+                FROM study_chunks AS sc
+                JOIN study_versions AS sv
+                  ON sv.id = sc.study_version_id AND sv.is_current
+                JOIN studies AS s ON s.id = sv.study_id AND s.status = 'active'
+                ORDER BY sc.embedding <=> CAST(:embedding AS vector)
                 LIMIT :limit
                 """
             ),
-            {"embedding": literal, "limit": candidate_limit},
+            {"embedding": literal, "limit": settings.RETRIEVAL_VECTOR_K},
         ).all()
-        scored: list[dict[str, Any]] = []
-        for row in rows:
-            if row.distance is not None and float(row.distance) > MAX_DISTANCE:
+        keyword_rows = session.execute(
+            text(
+                f"""
+                SELECT {_CHUNK_SELECT},
+                       ts_rank_cd(sc.text_search, plainto_tsquery('english', :q)) AS rank,
+                       CASE
+                         WHEN sc.text ILIKE '%' || :phrase || '%' ESCAPE '\\' THEN 1
+                         ELSE 0
+                       END AS phrase_hit
+                FROM study_chunks AS sc
+                JOIN study_versions AS sv
+                  ON sv.id = sc.study_version_id AND sv.is_current
+                JOIN studies AS s ON s.id = sv.study_id AND s.status = 'active'
+                WHERE sc.text_search @@ plainto_tsquery('english', :q)
+                ORDER BY phrase_hit DESC, rank DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "q": query,
+                "phrase": escape_like(query),
+                "limit": settings.RETRIEVAL_KEYWORD_K,
+            },
+        ).all()
+
+        by_id: dict[str, Any] = {}
+        for row in (*vector_rows, *keyword_rows):
+            chunk_id = str(row.chunk_id)
+            if chunk_id in by_id:
                 continue
-            chunks, best_chunk_distance = _closest_chunks(session, row.version_id, literal)
-            scored.append(
-                {
-                    "study_id": str(row.study_id),
-                    "version_id": str(row.version_id),
-                    "title": row.title,
-                    "section": row.section,
-                    "chunks": chunks,
-                    "distance": float(row.distance) if row.distance is not None else 1.0,
-                    "chunk_distance": best_chunk_distance,
-                }
-            )
-        if rerank_chunks:
-            scored.sort(key=lambda item: (item["chunk_distance"], item["distance"]))
-        return scored[:final_limit]
+            fields = {
+                "background": row.background or "",
+                "challenge": row.challenge or "",
+                "approach": row.approach or "",
+                "solution": row.solution or "",
+                "outcome": row.outcome or "",
+                "tech_stack": row.tech_stack or "",
+            }
+            by_id[chunk_id] = {
+                "chunk_id": chunk_id,
+                "study_id": str(row.study_id),
+                "version_id": str(row.version_id),
+                "title": row.title,
+                "category": row.category,
+                "text": row.chunk_text,
+                "part": chunk_part_name(row.chunk_text, fields),
+            }
 
+        vector_ids = [str(row.chunk_id) for row in vector_rows]
+        keyword_ids = [str(row.chunk_id) for row in keyword_rows]
+        fused_ids = rrf_merge(
+            vector_ids,
+            keyword_ids,
+            k=settings.RETRIEVAL_RRF_K,
+        )
+        capped_ids = cap_chunks_per_study(
+            fused_ids,
+            {chunk_id: by_id[chunk_id]["study_id"] for chunk_id in by_id},
+            pool_limit=settings.RETRIEVAL_FUSED_POOL,
+            max_per_study=settings.RETRIEVAL_MAX_CHUNKS_PER_STUDY,
+        )
+        candidates = [by_id[chunk_id] for chunk_id in capped_ids if chunk_id in by_id]
+        if not candidates:
+            return []
 
-def _closest_chunks(session, version_id, literal: str) -> tuple[list[dict[str, Any]], float]:  # noqa: ANN001
-    chunks = session.execute(
-        text(
-            """
-            SELECT position, text,
-                   (embedding <=> CAST(:embedding AS vector)) AS distance
-            FROM study_chunks
-            WHERE study_version_id = :version_id
-            ORDER BY embedding <=> CAST(:embedding AS vector)
-            LIMIT :limit
-            """
-        ),
-        {"version_id": version_id, "embedding": literal, "limit": CHUNK_LIMIT},
-    ).all()
-    ordered = sorted(
-        [{"position": chunk.position, "text": chunk.text} for chunk in chunks],
-        key=lambda item: item["position"],
-    )
-    best = min((float(chunk.distance) for chunk in chunks), default=1.0)
-    if ordered:
-        return ordered, best
-    stored = session.exec(
-        select(StudyChunk)
-        .where(StudyChunk.study_version_id == version_id)
-        .order_by(StudyChunk.position)
-    ).all()
-    ordered = [{"position": chunk.position, "text": chunk.text} for chunk in stored[:CHUNK_LIMIT]]
-    return ordered, 1.0
+        scores = rerank_texts(query, [item["text"] for item in candidates])
+        scored = [
+            {**item, "score": float(score)}
+            for item, score in zip(candidates, scores, strict=True)
+        ]
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return group_studies_by_best_chunk(
+            scored,
+            study_limit=settings.RETRIEVAL_STUDY_LIMIT,
+            max_chunks_per_study=settings.RETRIEVAL_MAX_CHUNKS_PER_STUDY,
+            min_score=settings.RERANK_MIN_SCORE,
+        )
 
 
 def _study_rows(shortlist: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for rank, item in enumerate(shortlist, start=1):
-        quote = "\n\n".join(chunk["text"] for chunk in item["chunks"]).strip()
         rows.append(
             {
                 "rank": rank,
                 "study_id": item["study_id"],
-                "section": item["section"],
+                "category": item["category"],
                 "title": item["title"],
-                "reason": _fallback(quote) or f"Related to: {item['title']}",
+                "chunks": list(item["chunks"]),
             }
         )
     return rows
@@ -169,7 +207,8 @@ def _persist_matches(
         session.execute(delete(PitchMatch).where(PitchMatch.pitch_id == pitch_id))
         rows: list[dict[str, Any]] = []
         for rank, item in enumerate(shortlist, start=1):
-            quote = "\n\n".join(chunk["text"] for chunk in item["chunks"]).strip()
+            chunks = list(item["chunks"])
+            quote = "\n\n".join(chunk["text"] for chunk in chunks).strip()
             drafted = _draft_reason(query, item["title"], quote, str(pitch_id))
             reason = ground_reason(drafted, quote) or _fallback(quote)
             session.add(
@@ -187,10 +226,9 @@ def _persist_matches(
                 {
                     "rank": rank,
                     "study_id": item["study_id"],
-                    "section": item["section"],
+                    "category": item["category"],
                     "title": item["title"],
-                    "reason": reason,
-                    "source_quote": quote[:4000],
+                    "chunks": chunks,
                 }
             )
         session.commit()

@@ -31,6 +31,19 @@ class Settings(BaseSettings):
     CORS_ALLOW_ORIGINS: str
     EMBEDDING_MODEL: str
     EMBEDDING_DIMENSIONS: int
+    # Hybrid chunk retrieval (browse_studies / recommend_pitch_studies).
+    RETRIEVAL_VECTOR_K: int = 40
+    RETRIEVAL_KEYWORD_K: int = 40
+    RETRIEVAL_FUSED_POOL: int = 40
+    RETRIEVAL_MAX_CHUNKS_PER_STUDY: int = 3
+    RETRIEVAL_STUDY_LIMIT: int = 5
+    RETRIEVAL_RRF_K: int = 60
+    RERANK_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    # Query+chunk token budget BAAI recommends for v2-m3. Query is char-capped below.
+    RERANK_MAX_LENGTH: int = 1024
+    RERANK_QUERY_CHARS: int = 1500
+    # Drop studies whose best chunk score is below this (raw cross-encoder logits).
+    RERANK_MIN_SCORE: float = -5.0
     # Structure ingest LLM: groq | openai | local
     STRUCTURE_LLM_PROVIDER: str
     # Empty uses GROQ_MODEL or the local GGUF file. Required when the provider is openai.
