@@ -216,20 +216,8 @@ async def stream_turn(
         interrupted = False
         try:
             async for event in graph.astream_events(state_in, config=config, version="v2"):
-                kind = event.get("event")
-                if kind == "on_chat_model_stream":
-                    chunk = event.get("data", {}).get("chunk")
-                    text = _chunk_text(chunk)
-                    if text:
-                        yield format_sse("assistant.delta", {"text": text})
-                elif (
-                    kind == "on_tool_end"
-                    and event.get("name") == "recommend_pitch_studies"
-                ):
-                    # pitch_matches are written only by recommend_pitch_studies
-                    matches = list_matches_public(pitch_id)
-                    if matches:
-                        yield format_sse("matches", {"items": matches})
+                for chunk in _sse_from_graph_event(event, pitch_id=pitch_id):
+                    yield chunk
         except Exception as exc:
             if exc.__class__.__name__ == "GraphInterrupt":
                 interrupted = True
@@ -404,3 +392,133 @@ def _chunk_text(chunk: object) -> str:
                 parts.append(str(item.get("text") or ""))
         return "".join(parts)
     return ""
+
+
+def _langgraph_node(event: dict) -> str:
+    meta = event.get("metadata") or {}
+    node = meta.get("langgraph_node")
+    if isinstance(node, str) and node:
+        return node
+    name = event.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _sse_from_graph_event(event: dict, *, pitch_id: UUID):
+    """Map LangGraph astream_events → SSE. Skip policy_gate model streams."""
+    kind = event.get("event")
+    node = _langgraph_node(event)
+
+    if kind == "on_chat_model_stream":
+        if node == "policy_gate":
+            return
+        chunk = event.get("data", {}).get("chunk")
+        text = _chunk_text(chunk)
+        if text:
+            yield format_sse("assistant.delta", {"text": text})
+        return
+
+    if kind == "on_chain_end" and node == "policy_gate":
+        output = event.get("data", {}).get("output")
+        gate = output.get("gate") if isinstance(output, dict) else None
+        if gate == "allow_tools":
+            yield format_sse("status", {"text": "Working on it...."})
+        return
+
+    if kind == "on_chat_model_end":
+        if node == "policy_gate":
+            return
+        output = event.get("data", {}).get("output")
+        for call in _tool_calls_from_model_output(output):
+            yield format_sse(
+                "tool.selected",
+                {
+                    "name": call["name"],
+                    "args": call["args"],
+                    "id": call["id"],
+                },
+            )
+        return
+
+    if kind == "on_tool_start":
+        tool_name = event.get("name") or "tool"
+        yield format_sse(
+            "tool.started",
+            {
+                "name": tool_name,
+                "input": event.get("data", {}).get("input"),
+            },
+        )
+        return
+
+    if kind == "on_tool_end":
+        tool_name = event.get("name") or "tool"
+        raw_output = event.get("data", {}).get("output")
+        body = _tool_result_body(tool_name, raw_output)
+        summary = _tool_result_summary(tool_name, raw_output)
+        yield format_sse(
+            "tool.finished",
+            {
+                "name": tool_name,
+                "ok": summary.get("ok", True),
+                "summary": summary.get("label", ""),
+                "body": body,
+            },
+        )
+        if tool_name == "recommend_pitch_studies":
+            matches = list_matches_public(pitch_id)
+            if matches:
+                yield format_sse("matches", {"items": matches})
+        return
+
+
+def _tool_calls_from_model_output(output: object) -> list[dict]:
+    raw_calls = getattr(output, "tool_calls", None) or []
+    calls: list[dict] = []
+    for item in raw_calls:
+        if isinstance(item, dict):
+            name = str(item.get("name") or "tool")
+            args = item.get("args") if isinstance(item.get("args"), dict) else {}
+            call_id = str(item.get("id") or "")
+        else:
+            name = str(getattr(item, "name", None) or "tool")
+            args = getattr(item, "args", None)
+            args = args if isinstance(args, dict) else {}
+            call_id = str(getattr(item, "id", None) or "")
+        calls.append({"name": name, "args": args, "id": call_id})
+    return calls
+
+
+def _tool_result_body(tool_name: str, raw_output: object) -> str:
+    if hasattr(raw_output, "content"):
+        text = _chunk_text(raw_output)
+    elif isinstance(raw_output, str):
+        text = raw_output
+    else:
+        text = json.dumps(raw_output, default=str)
+    text = (text or "").strip()
+    if text.startswith(f"{tool_name}:"):
+        return text
+    return f"{tool_name}: {text}" if text else tool_name
+
+
+def _tool_result_summary(tool_name: str, raw_output: object) -> dict:
+    text = _tool_result_body(tool_name, raw_output)
+    payload_text = text
+    prefix = f"{tool_name}:"
+    if payload_text.startswith(prefix):
+        payload_text = payload_text[len(prefix) :].strip()
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return {"ok": True, "label": tool_name}
+    if not isinstance(payload, dict):
+        return {"ok": True, "label": tool_name}
+    ok = bool(payload.get("ok", True))
+    studies = payload.get("studies")
+    if isinstance(studies, list):
+        count = len(studies)
+        label = "1 study" if count == 1 else f"{count} studies"
+        return {"ok": ok, "label": label}
+    if payload.get("error"):
+        return {"ok": False, "label": str(payload.get("error"))}
+    return {"ok": ok, "label": tool_name}
