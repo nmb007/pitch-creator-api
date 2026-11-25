@@ -229,7 +229,7 @@ def _persist_matches(
                     study_version_id=UUID(item["version_id"]),
                     rank=rank,
                     reason=reason,
-                    source_quote=quote[:4000],
+                    source_quote=quote,
                     selected=False,
                 )
             )
