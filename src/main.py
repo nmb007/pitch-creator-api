@@ -1,5 +1,7 @@
 """FastAPI application entrypoint."""
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
@@ -9,12 +11,25 @@ from src import runtime
 from src.auth.router import router as auth_router
 from src.config import checkpoint_conninfo, configure_tracing, cors_allow_origins, settings
 from src.decks.router import router as decks_router
+from src.embeddings import embed_texts
 from src.pitches.graph import compile_graph
 from src.pitches.router import router as pitches_router
+from src.rerank import rerank_texts
 
 configure_tracing()
 
+logger = logging.getLogger(__name__)
+
 SHOW_DOCS_IN = {"local", "staging", "test"}
+
+
+def warm_local_models() -> None:
+    """Load embed + rerank models once at startup (download if missing)."""
+    logger.info("Warming embedding model %s", settings.EMBEDDING_MODEL)
+    embed_texts(["warmup"])
+    logger.info("Warming reranker model %s", settings.RERANK_MODEL)
+    rerank_texts("warmup", ["warmup"])
+    logger.info("Local models ready")
 
 
 @asynccontextmanager
@@ -28,6 +43,7 @@ async def lifespan(app: FastAPI):
     async with AsyncPostgresSaver.from_conn_string(checkpoint_conninfo()) as saver:
         await saver.setup()
         runtime.graph = compile_graph(saver)
+        await asyncio.to_thread(warm_local_models)
         yield
     runtime.graph = None
 
