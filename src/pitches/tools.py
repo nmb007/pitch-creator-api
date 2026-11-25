@@ -54,6 +54,10 @@ _CHUNK_SELECT = """
 def browse_studies(query: str) -> str:
     """Find Arbisoft case studies matching a topic or capability (not a full prospect pitch).
 
+    Set query to a compact search phrase: the main topic or capability, plus any real
+    filters (industry, region, product type etc...). Drop fillers. Keep secondary constraints; do not reduce
+    a multi-part ask to a single buzzword when other filters matter.
+
     Results include winning passage chunks. Base every claim on those chunks.
     """
     cleaned = query.strip()
@@ -70,6 +74,9 @@ def browse_studies(query: str) -> str:
 @tool
 def recommend_pitch_studies(brief: str) -> str:
     """Recommend the best case studies for a prospect brief or RFP-style pitch request.
+
+    Pass a fuller brief in brief: prospect need, domain, and constraints etc... from the user
+    message. Do not collapse an RFP-style ask into a single keyword.
 
     Results include winning passage chunks. Base every claim on those chunks.
     """
