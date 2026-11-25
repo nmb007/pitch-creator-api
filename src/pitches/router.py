@@ -22,6 +22,7 @@ from src.pitches.schemas import (
     MessageResponse,
     PageResponse,
     PageStudyResponse,
+    PageUpdateRequest,
     PitchResponse,
     SelectionRequest,
 )
@@ -231,6 +232,45 @@ async def get_page(pitch_id: UUID, user: CurrentUserDep) -> PageResponse:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pitch page not found"
         ) from exc
+    return _page_response(row)
+
+
+@router.patch(
+    "/{pitch_id}/page",
+    summary="Edit the pitch page (new revision)",
+    responses=error_responses(
+        HTTP_404_NOT_FOUND=("Pitch page not found", "Pitch page not found"),
+        HTTP_422_UNPROCESSABLE_CONTENT=(
+            "Title and body are required",
+            "Title and body are required",
+        ),
+    ),
+)
+async def patch_page(
+    pitch_id: UUID,
+    payload: PageUpdateRequest,
+    user: CurrentUserDep,
+) -> PageResponse:
+    try:
+        row = await asyncify(pitch_service.update_page)(
+            pitch_id=pitch_id,
+            user_id=user.id,
+            title=payload.title,
+            body=payload.body,
+        )
+    except EmptyInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Title and body are required",
+        ) from exc
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pitch page not found"
+        ) from exc
+    return _page_response(row)
+
+
+def _page_response(row: dict) -> PageResponse:  # noqa: ANN001
     return PageResponse(
         title=row["title"],
         body=row["body"],

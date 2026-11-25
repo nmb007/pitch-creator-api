@@ -59,3 +59,8 @@ class PageResponse(BaseModel):
     title: str
     body: str
     studies: list[PageStudyResponse]
+
+
+class PageUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    body: str = Field(min_length=1)

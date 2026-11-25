@@ -384,48 +384,88 @@ def get_page(pitch_id: UUID, user_id: UUID) -> dict:
         pitch = session.get(Pitch, pitch_id)
         if pitch is None or pitch.created_by != user_id:
             raise NotFoundError()
-        page = session.exec(
-            select(PitchPage)
-            .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
-            .where(PitchRevision.pitch_id == pitch_id)
-            .order_by(PitchRevision.created_at.desc())
-        ).first()
+        page = _latest_page(session, pitch_id)
         if page is None:
             raise NotFoundError()
-        studies = []
-        for match, study, version in session.exec(
-            select(PitchMatch, Study, StudyVersion)
-            .join(Study, Study.id == PitchMatch.study_id)
-            .join(StudyVersion, StudyVersion.id == PitchMatch.study_version_id)
-            .where(PitchMatch.pitch_id == pitch_id)
-            .where(PitchMatch.selected.is_(True))
-            .order_by(PitchMatch.rank)
-        ).all():
-            background = (version.background or "").strip()
-            challenge = (version.challenge or "").strip()
-            approach = (version.approach or "").strip()
-            solution = (version.solution or "").strip()
-            outcome = (version.outcome or "").strip()
-            tech_stack = (version.tech_stack or "").strip()
-            has_structured = any(
-                (background, challenge, approach, solution, outcome, tech_stack)
+        return {
+            "title": page.title,
+            "body": page.body,
+            "studies": _selected_study_details(session, pitch_id),
+        }
+
+
+def update_page(*, pitch_id: UUID, user_id: UUID, title: str, body: str) -> dict:
+    """Append a revision with source=edit and a new pitch_pages row."""
+    clean_title = title.strip()[:200]
+    clean_body = body.strip()
+    if not clean_title or not clean_body:
+        raise EmptyInputError()
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        current = _latest_page(session, pitch_id)
+        if current is None:
+            raise NotFoundError()
+        revision = PitchRevision(pitch_id=pitch_id, source="edit", created_by=user_id)
+        session.add(revision)
+        session.flush()
+        session.add(
+            PitchPage(
+                revision_id=revision.id,
+                title=clean_title,
+                body=clean_body,
+                prospect_logo_storage_key=current.prospect_logo_storage_key,
             )
-            studies.append(
-                {
-                    "study_id": study.id,
-                    "rank": match.rank,
-                    "section": study.section,
-                    "title": study.title,
-                    "background": background,
-                    "challenge": challenge,
-                    "approach": approach,
-                    "solution": solution,
-                    "outcome": outcome,
-                    "tech_stack": tech_stack,
-                    "raw_text": "" if has_structured else (version.raw_text or "").strip(),
-                }
-            )
-        return {"title": page.title, "body": page.body, "studies": studies}
+        )
+        pitch.updated_at = utcnow()
+        session.add(pitch)
+        session.commit()
+    return get_page(pitch_id, user_id)
+
+
+def _latest_page(session, pitch_id: UUID) -> PitchPage | None:  # noqa: ANN001
+    return session.exec(
+        select(PitchPage)
+        .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
+        .where(PitchRevision.pitch_id == pitch_id)
+        .order_by(PitchRevision.created_at.desc())
+    ).first()
+
+
+def _selected_study_details(session, pitch_id: UUID) -> list[dict]:  # noqa: ANN001
+    studies = []
+    for match, study, version in session.exec(
+        select(PitchMatch, Study, StudyVersion)
+        .join(Study, Study.id == PitchMatch.study_id)
+        .join(StudyVersion, StudyVersion.id == PitchMatch.study_version_id)
+        .where(PitchMatch.pitch_id == pitch_id)
+        .where(PitchMatch.selected.is_(True))
+        .order_by(PitchMatch.rank)
+    ).all():
+        background = (version.background or "").strip()
+        challenge = (version.challenge or "").strip()
+        approach = (version.approach or "").strip()
+        solution = (version.solution or "").strip()
+        outcome = (version.outcome or "").strip()
+        tech_stack = (version.tech_stack or "").strip()
+        has_structured = any((background, challenge, approach, solution, outcome, tech_stack))
+        studies.append(
+            {
+                "study_id": study.id,
+                "rank": match.rank,
+                "section": study.section,
+                "title": study.title,
+                "background": background,
+                "challenge": challenge,
+                "approach": approach,
+                "solution": solution,
+                "outcome": outcome,
+                "tech_stack": tech_stack,
+                "raw_text": "" if has_structured else (version.raw_text or "").strip(),
+            }
+        )
+    return studies
 
 
 def list_matches(pitch_id: UUID, user_id: UUID) -> list[dict]:

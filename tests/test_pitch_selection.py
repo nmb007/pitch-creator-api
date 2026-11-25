@@ -12,7 +12,7 @@ from src.pitches import generate as generate_mod
 from src.pitches import graph as pitch_graph
 from src.pitches import service as pitch_service
 from src.pitches import tools as pitch_tools
-from src.pitches.models import Pitch, PitchInput, PitchMatch
+from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchPage, PitchRevision
 
 
 async def _token(client) -> str:  # noqa: ANN001
@@ -295,6 +295,62 @@ async def test_page_requires_auth(client, monkeypatch) -> None:  # noqa: ANN001
     assert denied.status_code == 404
 
 
+async def test_patch_page_creates_new_revision(client, monkeypatch) -> None:  # noqa: ANN001
+    token = await _token(client)
+    user = auth_service.ensure_user(
+        username="select@example.com",
+        password="correct-password",
+        name="Select Person",
+    )
+    pitch_id, study_ids = _seed_pitch_with_matches(user.id)
+    monkeypatch.setattr(
+        generate_mod,
+        "_draft_pitch",
+        lambda **kwargs: {
+            "title": "Original Title",
+            "body": "## Why this matters\n\nOriginal body.",
+        },
+    )
+    created = await client.put(
+        f"/v1/pitches/{pitch_id}/selection",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"study_ids": [str(study_ids[0])]},
+    )
+    assert created.status_code == 200
+
+    patched = await client.patch(
+        f"/v1/pitches/{pitch_id}/page",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "title": "Edited Title",
+            "body": "## Why this matters\n\nEdited body with a clearer hook.",
+        },
+    )
+    assert patched.status_code == 200
+    assert patched.json()["title"] == "Edited Title"
+    assert "Edited body" in patched.json()["body"]
+
+    with pitch_service.get_sync_session() as session:
+        revisions = list(
+            session.exec(
+                select(PitchRevision)
+                .where(PitchRevision.pitch_id == pitch_id)
+                .order_by(PitchRevision.created_at)
+            ).all()
+        )
+        assert len(revisions) == 2
+        assert revisions[0].source == "generate"
+        assert revisions[1].source == "edit"
+        pages = list(session.exec(select(PitchPage)).all())
+        assert len(pages) == 2
+
+    latest = await client.get(
+        f"/v1/pitches/{pitch_id}/page",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert latest.json()["title"] == "Edited Title"
+
+
 async def test_page_falls_back_to_raw_text_when_sections_empty(
     client,  # noqa: ANN001
     monkeypatch,  # noqa: ANN001
@@ -306,9 +362,6 @@ async def test_page_falls_back_to_raw_text_when_sections_empty(
         name="Select Person",
     )
     pitch_id, study_ids = _seed_pitch_with_matches(user.id)
-    from sqlmodel import select
-
-    from src.decks.models import StudyVersion
 
     with pitch_service.get_sync_session() as session:
         version = session.exec(
