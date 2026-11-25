@@ -64,17 +64,5 @@ class PitchPage(UUIDModel, table=True):
 
     revision_id: UUID = Field(foreign_key="pitch_revisions.id")
     title: str = Field(default="")
-    background: str = Field(default="")
-    challenges: str = Field(default="")
-    solution: str = Field(default="")
-    key_highlights: str = Field(default="")
-    impact: str = Field(default="")
-    technology: str = Field(default="")
+    body: str = Field(default="")
     prospect_logo_storage_key: str | None = Field(default=None, max_length=500)
-
-
-class PitchPdf(UUIDModel, TimestampModel, table=True):
-    __tablename__ = "pitch_pdfs"
-
-    revision_id: UUID = Field(foreign_key="pitch_revisions.id")
-    storage_key: str = Field(max_length=500)

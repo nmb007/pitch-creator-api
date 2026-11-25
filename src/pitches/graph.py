@@ -1,4 +1,4 @@
-"""Conversational pitch graph: policy gate, then tools agent."""
+"""Conversational pitch graph: policy gate, tools agent, then optional generate."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from langgraph.types import interrupt
 from src.database import get_sync_session
 from src.llm import chat_model
 from src.models import utcnow
+from src.pitches.generate import write_generated_pitch
 from src.pitches.models import Pitch, PitchMessage
 from src.pitches.policy import decide_gate
 from src.pitches.tools import awaiting_selection, current_pitch_id, pitch_tools
@@ -57,6 +58,8 @@ class PitchState(TypedDict, total=False):
     gate: Literal["allow_tools", "refuse", "clarify"]
     messages: Annotated[list[BaseMessage], add_messages]
     awaiting_selection: bool
+    selected_study_ids: list[str]
+    generated_message: str
 
 
 def compile_graph(checkpointer):  # noqa: ANN001, ANN202
@@ -67,6 +70,7 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
     builder.add_node("agent", make_agent_node(tools))
     builder.add_node("tools", make_tools_node(tool_node))
     builder.add_node("maybe_wait", maybe_wait)
+    builder.add_node("generate", generate)
     builder.add_edge(START, "policy_gate")
     builder.add_conditional_edges(
         "policy_gate",
@@ -83,7 +87,12 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
         route_after_tools,
         {"agent": "agent", "maybe_wait": "maybe_wait"},
     )
-    builder.add_edge("maybe_wait", END)
+    builder.add_conditional_edges(
+        "maybe_wait",
+        route_after_wait,
+        {"generate": "generate", END: END},
+    )
+    builder.add_edge("generate", END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -147,9 +156,32 @@ def route_after_tools(state: PitchState) -> str:
 
 
 def maybe_wait(state: PitchState) -> dict[str, Any]:
-    if state.get("awaiting_selection"):
-        interrupt({"pitch_id": state["pitch_id"]})
-    return {}
+    if not state.get("awaiting_selection"):
+        return {}
+    # Resume value is the list of selected study id strings from PUT /selection.
+    selected = interrupt({"pitch_id": state["pitch_id"]})
+    ids = [str(item) for item in selected] if isinstance(selected, list) else []
+    return {
+        "selected_study_ids": ids,
+        "awaiting_selection": False,
+    }
+
+
+def route_after_wait(state: PitchState) -> str:
+    if state.get("selected_study_ids"):
+        return "generate"
+    return END
+
+
+def generate(state: PitchState) -> dict[str, Any]:
+    pitch_id = UUID(state["pitch_id"])
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None:
+            raise RuntimeError(f"Pitch {pitch_id} was missing during generate")
+        user_id = pitch.created_by
+    result = write_generated_pitch(pitch_id=pitch_id, user_id=user_id)
+    return {"generated_message": result["message"]}
 
 
 def _persist_state_message(pitch_id: UUID, message: BaseMessage) -> None:

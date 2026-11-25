@@ -12,6 +12,7 @@ class PitchResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     has_matches: bool = False
+    has_page: bool = False
 
 
 class MatchResponse(BaseModel):
@@ -33,3 +34,20 @@ class MessageResponse(BaseModel):
 
 class FollowUpMessage(BaseModel):
     message: str = Field(min_length=1)
+
+
+class SelectionRequest(BaseModel):
+    study_ids: list[UUID] = Field(min_length=1)
+
+
+class PageStudyResponse(BaseModel):
+    study_id: UUID
+    rank: int
+    section: str
+    title: str
+
+
+class PageResponse(BaseModel):
+    title: str
+    body: str
+    studies: list[PageStudyResponse]

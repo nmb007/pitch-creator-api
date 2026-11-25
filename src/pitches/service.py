@@ -10,17 +10,19 @@ from pathlib import Path
 from uuid import UUID
 
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from sqlmodel import select
 
 from src import runtime
 from src.config import settings
 from src.database import get_sync_session
 from src.decks.models import Study
-from src.exceptions import NotFoundError
+from src.exceptions import ConflictError, NotFoundError
 from src.models import utcnow
-from src.pitches.exceptions import EmptyInputError
+from src.pitches.exceptions import EmptyInputError, EmptySelectionError, UnknownSelectionError
 from src.pitches.extract import ALLOWED_EXTENSIONS, extract_text
-from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage
+from src.pitches.generate import write_generated_pitch
+from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage, PitchPage, PitchRevision
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +276,138 @@ def has_matches(pitch_id: UUID) -> bool:
             select(PitchMatch.id).where(PitchMatch.pitch_id == pitch_id).limit(1)
         ).first()
         return row is not None
+
+
+def has_page(pitch_id: UUID) -> bool:
+    with get_sync_session() as session:
+        row = session.exec(
+            select(PitchPage.id)
+            .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
+            .where(PitchRevision.pitch_id == pitch_id)
+            .limit(1)
+        ).first()
+        return row is not None
+
+
+def apply_selection(*, pitch_id: UUID, user_id: UUID, study_ids: list[UUID]) -> list[str]:
+    """Validate and mark selected matches. Returns study id strings for graph resume."""
+    unique_ids = list(dict.fromkeys(study_ids))
+    if not unique_ids:
+        raise EmptySelectionError()
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        page_exists = (
+            session.exec(
+                select(PitchPage.id)
+                .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
+                .where(PitchRevision.pitch_id == pitch_id)
+                .limit(1)
+            ).first()
+            is not None
+        )
+        if page_exists:
+            raise ConflictError()
+        matches = list(
+            session.exec(select(PitchMatch).where(PitchMatch.pitch_id == pitch_id)).all()
+        )
+        if not matches:
+            raise NotFoundError()
+        by_study = {match.study_id: match for match in matches}
+        unknown = [study_id for study_id in unique_ids if study_id not in by_study]
+        if unknown:
+            raise UnknownSelectionError()
+        selected = set(unique_ids)
+        for match in matches:
+            match.selected = match.study_id in selected
+            session.add(match)
+        pitch.updated_at = utcnow()
+        session.add(pitch)
+        session.commit()
+    return [str(study_id) for study_id in unique_ids]
+
+
+async def stream_selection(
+    *, pitch_id: UUID, user_id: UUID, study_ids: list[UUID]
+) -> AsyncIterator[str]:
+    """Resume the interrupted graph and stream the assistant message with the view URL."""
+    selected = apply_selection(pitch_id=pitch_id, user_id=user_id, study_ids=study_ids)
+    key = str(pitch_id)
+    async with _guard:
+        if key in _active:
+            raise ConflictError()
+        _active.add(key)
+    try:
+        yield format_sse("status", {"text": "Writing your pitch…"})
+        graph = runtime.graph
+        try:
+            if graph is None:
+                # Tests and degraded startups still write the page without a checkpoint.
+                result = write_generated_pitch(pitch_id=pitch_id, user_id=user_id)
+                yield format_sse("assistant.delta", {"text": result["message"]})
+            else:
+                config = {
+                    "configurable": {"thread_id": key},
+                    "metadata": {"pitch_id": key, "model": settings.GROQ_MODEL},
+                    "tags": [key, settings.GROQ_MODEL],
+                }
+                async for event in graph.astream_events(
+                    Command(resume=selected),
+                    config=config,
+                    version="v2",
+                ):
+                    node = _langgraph_node(event)
+                    kind = event.get("event")
+                    if kind == "on_chain_end" and node == "generate":
+                        output = event.get("data", {}).get("output")
+                        text = ""
+                        if isinstance(output, dict):
+                            text = str(output.get("generated_message") or "").strip()
+                        if text:
+                            yield format_sse("assistant.delta", {"text": text})
+        except Exception:
+            logger.exception("Selection generate failed for pitch %s", key)
+            yield format_sse("error", {"detail": "The pitch could not be generated."})
+            yield format_sse("done", {})
+            return
+        assistant = _latest_assistant_message(pitch_id)
+        if assistant is not None:
+            yield format_sse("assistant.message", assistant)
+        yield format_sse("done", {})
+    finally:
+        _active.discard(key)
+
+
+def get_page(pitch_id: UUID, user_id: UUID) -> dict:
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        page = session.exec(
+            select(PitchPage)
+            .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
+            .where(PitchRevision.pitch_id == pitch_id)
+            .order_by(PitchRevision.created_at.desc())
+        ).first()
+        if page is None:
+            raise NotFoundError()
+        studies = [
+            {
+                "study_id": study.id,
+                "rank": match.rank,
+                "section": study.section,
+                "title": study.title,
+            }
+            for match, study in session.exec(
+                select(PitchMatch, Study)
+                .join(Study, Study.id == PitchMatch.study_id)
+                .where(PitchMatch.pitch_id == pitch_id)
+                .where(PitchMatch.selected.is_(True))
+                .order_by(PitchMatch.rank)
+            ).all()
+        ]
+        return {"title": page.title, "body": page.body, "studies": studies}
 
 
 def list_matches(pitch_id: UUID, user_id: UUID) -> list[dict]:

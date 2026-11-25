@@ -65,8 +65,9 @@ def browse_studies(query: str) -> str:
     """Find Arbisoft case studies matching a topic or capability (not a full prospect pitch).
 
     Set query to a compact search phrase: the main topic or capability, plus any real
-    filters (industry, region, product type etc...). Drop fillers. Keep secondary constraints; do not reduce
-    a multi-part ask to a single buzzword when other filters matter.
+    filters (industry, region, product type etc...). Drop fillers. Keep secondary
+    constraints; do not reduce a multi-part ask to a single buzzword when other
+    filters matter.
 
     Results include winning passage chunks. Base every claim on those chunks.
     """

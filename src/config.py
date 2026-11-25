@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     SEED_USER_NAME: str
     # Comma-separated browser origins. Empty means no cross-origin browser calls.
     CORS_ALLOW_ORIGINS: str
+    # Origin used in assistant messages that link to the generated pitch view.
+    WEB_BASE_URL: str = "http://localhost:3000"
     EMBEDDING_MODEL: str
     EMBEDDING_DIMENSIONS: int
     # Hybrid chunk retrieval (browse_studies / recommend_pitch_studies).

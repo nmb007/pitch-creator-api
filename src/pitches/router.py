@@ -9,9 +9,22 @@ from fastapi.responses import StreamingResponse
 from src.exceptions import ConflictError, NotFoundError
 from src.pitches import service as pitch_service
 from src.pitches.dependencies import CurrentUserDep
-from src.pitches.exceptions import BothInputsError, EmptyInputError
+from src.pitches.exceptions import (
+    BothInputsError,
+    EmptyInputError,
+    EmptySelectionError,
+    UnknownSelectionError,
+)
 from src.pitches.extract import ALLOWED_EXTENSIONS
-from src.pitches.schemas import FollowUpMessage, MatchResponse, MessageResponse, PitchResponse
+from src.pitches.schemas import (
+    FollowUpMessage,
+    MatchResponse,
+    MessageResponse,
+    PageResponse,
+    PageStudyResponse,
+    PitchResponse,
+    SelectionRequest,
+)
 from src.schemas import NOT_AUTHENTICATED_RESPONSE, error_responses
 
 router = APIRouter(prefix="/pitches", tags=["pitches"], responses=NOT_AUTHENTICATED_RESPONSE)
@@ -137,11 +150,92 @@ async def get_pitch(pitch_id: UUID, user: CurrentUserDep) -> PitchResponse:
     try:
         pitch = await asyncify(pitch_service.get_pitch)(pitch_id, user.id)
         matched = await asyncify(pitch_service.has_matches)(pitch_id)
+        page = await asyncify(pitch_service.has_page)(pitch_id)
     except NotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pitch not found"
         ) from exc
-    return _pitch_response(pitch, has_matches=matched)
+    return _pitch_response(pitch, has_matches=matched, has_page=page)
+
+
+@router.put(
+    "/{pitch_id}/selection",
+    summary="Select studies and stream the generated pitch link",
+    responses=error_responses(
+        HTTP_404_NOT_FOUND=("Pitch or study not found", "Pitch not found"),
+        HTTP_409_CONFLICT=(
+            "Pitch already generated or a turn is running",
+            "A pitch page already exists for this pitch",
+        ),
+        HTTP_422_UNPROCESSABLE_CONTENT=(
+            "Select at least one study",
+            "Select at least one study",
+        ),
+    ),
+)
+async def put_selection(
+    pitch_id: UUID,
+    payload: SelectionRequest,
+    user: CurrentUserDep,
+) -> StreamingResponse:
+    try:
+        # Validate before opening the stream so empty/unknown ids stay JSON errors.
+        await asyncify(pitch_service.apply_selection)(
+            pitch_id=pitch_id,
+            user_id=user.id,
+            study_ids=payload.study_ids,
+        )
+    except EmptySelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Select at least one study",
+        ) from exc
+    except UnknownSelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Study is not a match for this pitch",
+        ) from exc
+    except ConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A pitch page already exists for this pitch",
+        ) from exc
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pitch not found"
+        ) from exc
+
+    async def events():
+        try:
+            # Selection already applied above; stream_selection re-applies safely.
+            async for chunk in pitch_service.stream_selection(
+                pitch_id=pitch_id,
+                user_id=user.id,
+                study_ids=payload.study_ids,
+            ):
+                yield chunk
+        except ConflictError:
+            yield pitch_service.format_sse(
+                "error", {"detail": "A turn is already running for this pitch"}
+            )
+            yield pitch_service.format_sse("done", {})
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+@router.get("/{pitch_id}/page", summary="Latest generated pitch page")
+async def get_page(pitch_id: UUID, user: CurrentUserDep) -> PageResponse:
+    try:
+        row = await asyncify(pitch_service.get_page)(pitch_id, user.id)
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pitch page not found"
+        ) from exc
+    return PageResponse(
+        title=row["title"],
+        body=row["body"],
+        studies=[PageStudyResponse(**study) for study in row["studies"]],
+    )
 
 
 @router.get("/{pitch_id}/matches", summary="Ranked studies and reasons")
@@ -217,11 +311,17 @@ async def _one_input(request: Request) -> tuple[str | None, str | None, bytes | 
     )
 
 
-def _pitch_response(pitch, *, has_matches: bool = False) -> PitchResponse:  # noqa: ANN001
+def _pitch_response(  # noqa: ANN001
+    pitch,
+    *,
+    has_matches: bool = False,
+    has_page: bool = False,
+) -> PitchResponse:
     return PitchResponse(
         id=pitch.id,
         title=pitch.title,
         created_at=pitch.created_at,
         updated_at=pitch.updated_at,
         has_matches=has_matches,
+        has_page=has_page,
     )

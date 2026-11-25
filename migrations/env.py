@@ -26,7 +26,6 @@ from src.pitches.models import (  # noqa: F401
     PitchMatch,
     PitchMessage,
     PitchPage,
-    PitchPdf,
     PitchRevision,
 )
 

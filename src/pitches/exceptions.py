@@ -9,3 +9,11 @@ class BothInputsError(AppError):
 
 class EmptyInputError(AppError):
     """A pitch was given neither a message nor a readable file."""
+
+
+class EmptySelectionError(AppError):
+    """Generate was called with no selected studies."""
+
+
+class UnknownSelectionError(AppError):
+    """One or more study ids are not matches for this pitch."""

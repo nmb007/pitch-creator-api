@@ -18,6 +18,7 @@ os.environ["DATABASE_URL"] = "postgresql+psycopg://postgres:postgres@localhost:5
 os.environ["CELERY_BROKER_URL"] = "memory://"
 os.environ["STORAGE_DIR"] = "storage"
 os.environ["CORS_ALLOW_ORIGINS"] = "http://localhost:3000"
+os.environ["WEB_BASE_URL"] = "http://localhost:3000"
 os.environ["GROQ_API_KEY"] = ""
 os.environ["GROQ_MODEL"] = "openai/gpt-oss-120b"
 os.environ["GROQ_BASE_URL"] = "https://api.groq.com/openai/v1"
@@ -62,8 +63,10 @@ from src.config import settings  # noqa: E402
 from src.database import get_sync_session as real_get_sync_session  # noqa: E402
 from src.decks import service as deck_service  # noqa: E402
 from src.main import app  # noqa: E402
+from src.pitches import generate as pitch_generate  # noqa: E402
 from src.pitches import graph as pitch_graph  # noqa: E402
 from src.pitches import service as pitch_service  # noqa: E402
+from src.pitches import tools as pitch_tools  # noqa: E402
 
 del real_get_sync_session
 
@@ -91,6 +94,8 @@ def _sync_db(monkeypatch: pytest.MonkeyPatch) -> Iterator[Session]:
     monkeypatch.setattr(deck_service, "get_sync_session", get_session)
     monkeypatch.setattr(pitch_service, "get_sync_session", get_session)
     monkeypatch.setattr(pitch_graph, "get_sync_session", get_session)
+    monkeypatch.setattr(pitch_generate, "get_sync_session", get_session)
+    monkeypatch.setattr(pitch_tools, "get_sync_session", get_session)
     try:
         yield
     finally:
