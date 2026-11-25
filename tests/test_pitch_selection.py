@@ -186,6 +186,14 @@ async def test_selection_streams_view_link_and_writes_page(
     assert "help" in body["body"].lower()
     assert len(body["studies"]) == 1
     assert body["studies"][0]["study_id"] == str(study_ids[0])
+    assert body["studies"][0]["background"] == "Background text."
+    assert body["studies"][0]["challenge"] == "Challenge text."
+    assert body["studies"][0]["approach"] == "Approach text."
+    assert body["studies"][0]["solution"] == "Solution text."
+    assert body["studies"][0]["outcome"] == "Outcome text."
+    assert body["studies"][0]["tech_stack"] == "React Native"
+    # Structured fields present → raw_text fallback stays empty.
+    assert body["studies"][0]["raw_text"] == ""
 
     pitch = await client.get(
         f"/v1/pitches/{pitch_id}",
@@ -285,6 +293,56 @@ async def test_page_requires_auth(client, monkeypatch) -> None:  # noqa: ANN001
         headers={"Authorization": f"Bearer {token}"},
     )
     assert denied.status_code == 404
+
+
+async def test_page_falls_back_to_raw_text_when_sections_empty(
+    client,  # noqa: ANN001
+    monkeypatch,  # noqa: ANN001
+) -> None:
+    token = await _token(client)
+    user = auth_service.ensure_user(
+        username="select@example.com",
+        password="correct-password",
+        name="Select Person",
+    )
+    pitch_id, study_ids = _seed_pitch_with_matches(user.id)
+    from sqlmodel import select
+
+    from src.decks.models import StudyVersion
+
+    with pitch_service.get_sync_session() as session:
+        version = session.exec(
+            select(StudyVersion).where(StudyVersion.study_id == study_ids[0])
+        ).one()
+        version.background = ""
+        version.challenge = ""
+        version.approach = ""
+        version.solution = ""
+        version.outcome = ""
+        version.tech_stack = ""
+        version.raw_text = "Only the source narrative remains."
+        session.add(version)
+        session.commit()
+
+    monkeypatch.setattr(
+        generate_mod,
+        "_draft_pitch",
+        lambda **kwargs: {"title": "Pitch", "body": "Body"},
+    )
+    response = await client.put(
+        f"/v1/pitches/{pitch_id}/selection",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"study_ids": [str(study_ids[0])]},
+    )
+    assert response.status_code == 200
+    page = await client.get(
+        f"/v1/pitches/{pitch_id}/page",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert page.status_code == 200
+    study = page.json()["studies"][0]
+    assert study["background"] == ""
+    assert study["raw_text"] == "Only the source narrative remains."
 
 
 def test_generate_path_does_not_call_agent_again(monkeypatch) -> None:  # noqa: ANN001

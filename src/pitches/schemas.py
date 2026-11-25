@@ -45,6 +45,14 @@ class PageStudyResponse(BaseModel):
     rank: int
     section: str
     title: str
+    background: str = ""
+    challenge: str = ""
+    approach: str = ""
+    solution: str = ""
+    outcome: str = ""
+    tech_stack: str = ""
+    # Only filled when every structured section above is empty.
+    raw_text: str = ""
 
 
 class PageResponse(BaseModel):

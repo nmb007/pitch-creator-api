@@ -16,7 +16,7 @@ from sqlmodel import select
 from src import runtime
 from src.config import settings
 from src.database import get_sync_session
-from src.decks.models import Study
+from src.decks.models import Study, StudyVersion
 from src.exceptions import ConflictError, NotFoundError
 from src.models import utcnow
 from src.pitches.exceptions import EmptyInputError, EmptySelectionError, UnknownSelectionError
@@ -392,21 +392,39 @@ def get_page(pitch_id: UUID, user_id: UUID) -> dict:
         ).first()
         if page is None:
             raise NotFoundError()
-        studies = [
-            {
-                "study_id": study.id,
-                "rank": match.rank,
-                "section": study.section,
-                "title": study.title,
-            }
-            for match, study in session.exec(
-                select(PitchMatch, Study)
-                .join(Study, Study.id == PitchMatch.study_id)
-                .where(PitchMatch.pitch_id == pitch_id)
-                .where(PitchMatch.selected.is_(True))
-                .order_by(PitchMatch.rank)
-            ).all()
-        ]
+        studies = []
+        for match, study, version in session.exec(
+            select(PitchMatch, Study, StudyVersion)
+            .join(Study, Study.id == PitchMatch.study_id)
+            .join(StudyVersion, StudyVersion.id == PitchMatch.study_version_id)
+            .where(PitchMatch.pitch_id == pitch_id)
+            .where(PitchMatch.selected.is_(True))
+            .order_by(PitchMatch.rank)
+        ).all():
+            background = (version.background or "").strip()
+            challenge = (version.challenge or "").strip()
+            approach = (version.approach or "").strip()
+            solution = (version.solution or "").strip()
+            outcome = (version.outcome or "").strip()
+            tech_stack = (version.tech_stack or "").strip()
+            has_structured = any(
+                (background, challenge, approach, solution, outcome, tech_stack)
+            )
+            studies.append(
+                {
+                    "study_id": study.id,
+                    "rank": match.rank,
+                    "section": study.section,
+                    "title": study.title,
+                    "background": background,
+                    "challenge": challenge,
+                    "approach": approach,
+                    "solution": solution,
+                    "outcome": outcome,
+                    "tech_stack": tech_stack,
+                    "raw_text": "" if has_structured else (version.raw_text or "").strip(),
+                }
+            )
         return {"title": page.title, "body": page.body, "studies": studies}
 
 
