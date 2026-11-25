@@ -40,7 +40,9 @@ Base every claim on the chunks in the tool result.
 Name a technology or outcome only when it appears in one of those chunks.
 When a tool returns studies, cover every study in that result. Do not omit any for brevity.
 Put clear matches first. If a study's chunks do not clearly support the user's ask, still include it under a short "Weaker or uncertain matches" section and say why the match is weak.
-Your reply must account for all studies (the full study_count when present)."""
+Your reply must account for all studies (the full study_count when present).
+Write replies in Markdown only. Do not use HTML tags such as <br>.
+Inside tables, separate points with semicolons or a middle dot ( · ), not line-break tags."""
 
 _FALLBACK_GATE_REPLY = (
     "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
