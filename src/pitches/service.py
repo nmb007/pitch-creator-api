@@ -421,7 +421,7 @@ def _sse_from_graph_event(event: dict, *, pitch_id: UUID):
         output = event.get("data", {}).get("output")
         gate = output.get("gate") if isinstance(output, dict) else None
         if gate == "allow_tools":
-            yield format_sse("status", {"text": "Working on it...."})
+            yield format_sse("status", {"text": "Hang tight, we're working on it!"})
         return
 
     if kind == "on_chat_model_end":
