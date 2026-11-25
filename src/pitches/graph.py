@@ -38,8 +38,11 @@ Do not invent studies. Rely on tool results. Keep replies professional.
 If tools return no studies, say so and ask for a clearer topic or brief.
 Base every claim on the chunks in the tool result.
 Name a technology or outcome only when it appears in one of those chunks.
-When a tool returns studies, cover every study in that result. Do not omit any for brevity.
-Put clear matches first. If a study's chunks do not clearly support the user's ask, still include it under a short "Weaker or uncertain matches" section and say why the match is weak.
+When browse_studies returns studies, cover every study in that result. Do not omit any for brevity.
+When recommend_pitch_studies returns studies, stop after the tool call.
+The app shows those studies. Do not write a shortlist.
+Put clear matches first. If a study's chunks do not clearly support the user's ask,
+still include it under a short "Weaker or uncertain matches" section and say why the match is weak.
 Your reply must account for all studies (the full study_count when present).
 Write replies in Markdown only. Do not use HTML tags such as <br>.
 Inside tables, separate points with semicolons or a middle dot ( · ), not line-break tags."""
@@ -75,7 +78,11 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
         tools_condition,
         {"tools": "tools", END: "maybe_wait"},
     )
-    builder.add_edge("tools", "agent")
+    builder.add_conditional_edges(
+        "tools",
+        route_after_tools,
+        {"agent": "agent", "maybe_wait": "maybe_wait"},
+    )
     builder.add_edge("maybe_wait", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -94,19 +101,20 @@ def make_agent_node(tools: list[Any]):  # noqa: ANN201
 
 def make_tools_node(tool_node: ToolNode):  # noqa: ANN201
     def run_tools(state: PitchState) -> dict[str, Any]:
-        token = current_pitch_id.set(state["pitch_id"])
-        awaiting_selection.set(False)
+        pitch_token = current_pitch_id.set(state["pitch_id"])
+        box = {"ready": False}
+        flag_token = awaiting_selection.set(box)
         try:
             result = tool_node.invoke(state)
         finally:
-            current_pitch_id.reset(token)
+            current_pitch_id.reset(pitch_token)
+            awaiting_selection.reset(flag_token)
         pitch_id = UUID(state["pitch_id"])
         for message in result.get("messages") or []:
             _persist_state_message(pitch_id, message)
-        flagged = awaiting_selection.get()
         return {
             "messages": result.get("messages", []),
-            "awaiting_selection": bool(flagged or state.get("awaiting_selection")),
+            "awaiting_selection": bool(box["ready"] or state.get("awaiting_selection")),
         }
 
     return run_tools
@@ -129,6 +137,13 @@ def route_after_gate(state: PitchState) -> str:
     if state.get("gate") == "allow_tools":
         return "agent"
     return END
+
+
+def route_after_tools(state: PitchState) -> str:
+    """Skip the post-tool reply when a pitch shortlist was saved."""
+    if state.get("awaiting_selection"):
+        return "maybe_wait"
+    return "agent"
 
 
 def maybe_wait(state: PitchState) -> dict[str, Any]:

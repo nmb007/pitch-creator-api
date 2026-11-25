@@ -226,8 +226,10 @@ async def stream_turn(
                 yield format_sse("error", {"detail": "The assistant turn failed."})
                 yield format_sse("done", {})
                 return
+        # The latest assistant row after a saved shortlist is the tool call.
+        # Sending it would refill the pending bubble. The matches event is the result.
         assistant = _latest_assistant_message(pitch_id)
-        if assistant is not None:
+        if assistant is not None and not interrupted:
             yield format_sse("assistant.message", assistant)
         matches = list_matches_public(pitch_id)
         if matches:
@@ -258,9 +260,7 @@ def list_pitches(user_id: UUID) -> list[Pitch]:
     with get_sync_session() as session:
         pitches = list(
             session.exec(
-                select(Pitch)
-                .where(Pitch.created_by == user_id)
-                .order_by(Pitch.updated_at.desc())
+                select(Pitch).where(Pitch.created_by == user_id).order_by(Pitch.updated_at.desc())
             ).all()
         )
         for pitch in pitches:

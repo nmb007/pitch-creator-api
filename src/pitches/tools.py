@@ -32,7 +32,17 @@ logger = logging.getLogger(__name__)
 MIN_QUERY_CHARS = 8
 
 current_pitch_id: ContextVar[str] = ContextVar("current_pitch_id")
-awaiting_selection: ContextVar[bool] = ContextVar("awaiting_selection", default=False)
+# A dict so the tool thread can flip it. ContextVar.set inside that thread is discarded.
+awaiting_selection: ContextVar[dict[str, bool]] = ContextVar("awaiting_selection")
+
+
+def _mark_awaiting_selection(ready: bool) -> None:
+    try:
+        box = awaiting_selection.get()
+    except LookupError:
+        return
+    box["ready"] = ready
+
 
 _CHUNK_SELECT = """
     sc.id AS chunk_id,
@@ -65,10 +75,8 @@ def browse_studies(query: str) -> str:
         return json.dumps({"ok": False, "error": "Query too short", "studies": []})
     shortlist = _retrieve(cleaned)
     rows = _study_rows(shortlist)
-    awaiting_selection.set(False)
-    return json.dumps(
-        {"ok": True, "mode": "browse", "study_count": len(rows), "studies": rows}
-    )
+    _mark_awaiting_selection(False)
+    return json.dumps({"ok": True, "mode": "browse", "study_count": len(rows), "studies": rows})
 
 
 @tool
@@ -86,10 +94,9 @@ def recommend_pitch_studies(brief: str) -> str:
     shortlist = _retrieve(cleaned)
     pitch_id = UUID(current_pitch_id.get())
     rows = _persist_matches(pitch_id, cleaned, shortlist)
-    awaiting_selection.set(True)
-    return json.dumps(
-        {"ok": True, "mode": "pitch", "study_count": len(rows), "studies": rows}
-    )
+    # An empty shortlist still needs an assistant reply. Only a saved list waits.
+    _mark_awaiting_selection(bool(rows))
+    return json.dumps({"ok": True, "mode": "pitch", "study_count": len(rows), "studies": rows})
 
 
 def pitch_tools() -> list[Any]:
@@ -182,8 +189,7 @@ def _retrieve(query: str) -> list[dict[str, Any]]:
 
         scores = rerank_texts(query, [item["text"] for item in candidates])
         scored = [
-            {**item, "score": float(score)}
-            for item, score in zip(candidates, scores, strict=True)
+            {**item, "score": float(score)} for item, score in zip(candidates, scores, strict=True)
         ]
         scored.sort(key=lambda item: item["score"], reverse=True)
         return group_studies_by_best_chunk(
