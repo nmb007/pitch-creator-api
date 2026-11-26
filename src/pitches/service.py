@@ -23,6 +23,7 @@ from src.pitches.exceptions import EmptyInputError, EmptySelectionError, Unknown
 from src.pitches.extract import ALLOWED_EXTENSIONS, extract_text
 from src.pitches.generate import append_page_revision, draft_page_content, write_generated_pitch
 from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage, PitchPage, PitchRevision
+from src.pitches.retrieval import escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -506,29 +507,28 @@ def add_page_study(
 
 
 def find_pitch_match_studies(*, pitch_id: UUID, query: str) -> list[dict]:
-    """Match query against titles of all pitch_matches for this pitch (title only)."""
-    needle = query.strip().lower()
+    """Match query against titles of pitch_matches for this pitch (title only, in SQL)."""
+    needle = query.strip()
+    if not needle:
+        return []
+    pattern = f"%{escape_like(needle)}%"
     with get_sync_session() as session:
         rows = session.exec(
             select(PitchMatch, Study)
             .join(Study, Study.id == PitchMatch.study_id)
             .where(PitchMatch.pitch_id == pitch_id)
+            .where(Study.title.ilike(pattern, escape="\\"))
             .order_by(PitchMatch.rank)
         ).all()
-        results: list[dict] = []
-        for match, study in rows:
-            title = study.title or ""
-            if needle and needle not in title.lower():
-                continue
-            results.append(
-                {
-                    "study_id": str(study.id),
-                    "title": title,
-                    "section": study.section,
-                    "selected": bool(match.selected),
-                }
-            )
-        return results
+        return [
+            {
+                "study_id": str(study.id),
+                "title": study.title or "",
+                "section": study.section,
+                "selected": bool(match.selected),
+            }
+            for match, study in rows
+        ]
 
 
 def pitch_owner_id(pitch_id: UUID) -> UUID:
