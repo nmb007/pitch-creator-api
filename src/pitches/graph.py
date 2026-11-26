@@ -57,6 +57,8 @@ unless the user asks to start over or regenerate from the current selection.
 Resolve studies with find_pitch_studies before add_study or remove_study. Never invent UUIDs.
 Only add a study if find_pitch_studies shows it in this pitch's matches and selected is false.
 If find returns no match, say it was not in this pitch's suggested list.
+If find returns two or more studies (study_count >= 2), list the matches and ask which one
+to use; do not call add_study or remove_study until the user picks a single study.
 If selected is already true on an add request, say it is already on the pitch.
 If both remove_study or add_study and update_body are needed, change selection first, then update_body.
 Always pass rewrite explicitly as true or false on add_study and remove_study; never omit it.

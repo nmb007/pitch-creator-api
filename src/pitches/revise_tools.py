@@ -42,6 +42,8 @@ def find_pitch_studies(query: str) -> str:
 
     Searches all pitch_matches for this pitch (selected and not selected).
     Use before add_study or remove_study. Do not invent study ids.
+    If study_count is 2 or more, list the matches and ask the user which one before
+    calling add_study or remove_study.
     """
     pitch_id = _pitch_id()
     cleaned = query.strip()
