@@ -30,7 +30,7 @@ _GATE_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-_SYSTEM = """You gate messages for Arbisoft's case-study and pitch assistant.
+_SYSTEM_SEARCH = """You gate messages for Arbisoft's case-study and pitch assistant.
 You receive recent chat history (including tool results when present) plus the
 latest user message. Use that history.
 Decide exactly one of:
@@ -45,21 +45,43 @@ Decide exactly one of:
 
 Never answer out-of-domain questions. For allow_tools, reply may be empty."""
 
+_SYSTEM_REVISE = """You gate messages for Arbisoft's pitch refine assistant.
+A pitch page already exists for this thread. You receive recent chat history plus
+the latest user message. Use that history.
+Decide exactly one of:
+- allow_tools: refine the existing pitch page — change the title, edit the body or
+  a section, add or remove a shortlisted case study, regenerate from the current
+  selection, or short follow-ups that continue refine work (for example
+  "yes, update the description", "make it shorter", "remove that one").
+- refuse: off-topic (general knowledge, sports, politics, homework, etc.).
+  Reply briefly but politely and steer them back to refining this pitch.
+  reply must be non-empty.
+- clarify: greeting with no clear refine intent, or too vague to act on even with
+  history. Ask what they want to change. reply must be non-empty.
+
+Never answer out-of-domain questions. For allow_tools, reply may be empty."""
+
 
 def decide_gate(
     *,
     pitch_id: str,
     messages: Sequence[BaseMessage],
+    has_page: bool = False,
 ) -> tuple[GateDecision, str]:
     """Classify the latest turn using LangGraph ``messages`` (last N kept)."""
     window = list(messages)[-HISTORY_LIMIT:]
+    system = _SYSTEM_REVISE if has_page else _SYSTEM_SEARCH
     raw = complete_json(
-        system=_SYSTEM,
+        system=system,
         user=_gate_user_payload(window),
         schema=_GATE_SCHEMA,
         role="pitch",
         tags=[pitch_id, model_name_for("pitch")],
-        metadata={"pitch_id": pitch_id, "model": model_name_for("pitch")},
+        metadata={
+            "pitch_id": pitch_id,
+            "model": model_name_for("pitch"),
+            "has_page": has_page,
+        },
         run_name="pitch_policy_gate",
     )
     decision = str(raw.get("decision") or "clarify")
@@ -67,9 +89,16 @@ def decide_gate(
         decision = "clarify"
     reply = str(raw.get("reply") or "").strip()
     if decision != "allow_tools" and not reply:
-        reply = (
-            "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
-        )
+        if has_page:
+            reply = (
+                "I can help refine this pitch — title, description, or case studies. "
+                "What should we change?"
+            )
+        else:
+            reply = (
+                "I can help with Arbisoft case studies and pitch shortlists. "
+                "What should we look for?"
+            )
     return decision, reply  # type: ignore[return-value]
 
 

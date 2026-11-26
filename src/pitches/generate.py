@@ -94,6 +94,78 @@ def draft_page_content(pitch_id: UUID) -> dict[str, str]:
     return {"title": title, "body": body}
 
 
+_REVISE_BODY_SCHEMA: dict[str, Any] = {
+    "title": "RevisedPitchBody",
+    "type": "object",
+    "properties": {
+        "body": {
+            "type": "string",
+            "description": "Full revised pitch body in Markdown with the same ## section headings",
+        },
+    },
+    "required": ["body"],
+    "additionalProperties": False,
+}
+
+_REVISE_BODY_SYSTEM = """You revise an existing Arbisoft pitch page body.
+Keep the same Markdown section headings when they still apply:
+## Why this matters, ## How we can help, ## Relevant experience, ## Why Arbisoft, ## Next step.
+Use only facts from the prospect brief and selected case studies.
+Do not invent clients, metrics, technologies, or outcomes.
+Do not list study titles in the body; the app lists studies separately.
+Follow the user's instruction. If a section name is given, focus changes there but return the full body.
+Return the complete revised body Markdown."""
+
+
+def revise_body_content(
+    *,
+    pitch_id: UUID,
+    current_title: str,
+    current_body: str,
+    instruction: str,
+    section: str | None = None,
+) -> str:
+    """Rewrite pitch body from instruction, grounded in brief + selected studies."""
+    brief, studies = _load_brief_and_studies(pitch_id)
+    if not settings.GROQ_API_KEY:
+        return current_body.strip()
+    parts = [
+        f"Prospect brief:\n{brief[:6000]}\n",
+        f"Current title:\n{current_title}\n",
+        f"Current body:\n{current_body}\n",
+        f"Instruction:\n{instruction.strip()}",
+    ]
+    if section and section.strip():
+        parts.append(f"Focus section:\n{section.strip()}")
+    if studies:
+        parts.append("Selected case studies:")
+        for index, study in enumerate(studies, start=1):
+            parts.append(
+                f"\n{index}. {study['title']} ({study['section']})\n"
+                f"Background: {study['background']}\n"
+                f"Challenge: {study['challenge']}\n"
+                f"Approach: {study['approach']}\n"
+                f"Solution: {study['solution']}\n"
+                f"Outcome: {study['outcome']}\n"
+                f"Tech stack: {study['tech_stack']}"
+            )
+    try:
+        raw = complete_json(
+            system=_REVISE_BODY_SYSTEM,
+            user="\n".join(parts),
+            schema=_REVISE_BODY_SCHEMA,
+            role="pitch",
+            tags=[str(pitch_id), model_name_for("pitch")],
+            metadata={"pitch_id": str(pitch_id), "model": model_name_for("pitch")},
+            run_name="pitch_revise_body",
+        )
+    except Exception:
+        logger.exception("Pitch body revise failed for %s", pitch_id)
+        return current_body.strip()
+    body = str(raw.get("body") or "").strip()
+    return body or current_body.strip()
+
+
 def append_page_revision(
     *,
     pitch_id: UUID,

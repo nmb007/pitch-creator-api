@@ -96,6 +96,29 @@ def test_decide_gate_keeps_last_ten_messages(monkeypatch) -> None:  # noqa: ANN0
     assert "turn-11" in seen[0]
 
 
+def test_decide_gate_has_page_uses_refine_system(monkeypatch) -> None:  # noqa: ANN001
+    systems: list[str] = []
+
+    def fake_complete_json(**kwargs: object) -> dict[str, str]:
+        systems.append(str(kwargs.get("system") or ""))
+        return {"decision": "allow_tools", "reply": ""}
+
+    monkeypatch.setattr(policy_mod, "complete_json", fake_complete_json)
+    policy_mod.decide_gate(
+        pitch_id="test",
+        messages=[HumanMessage(content="Make the title shorter")],
+        has_page=True,
+    )
+    assert "refine" in systems[0].lower() or "pitch page" in systems[0].lower()
+    systems.clear()
+    policy_mod.decide_gate(
+        pitch_id="test",
+        messages=[HumanMessage(content="case studies on payments")],
+        has_page=False,
+    )
+    assert "shortlist" in systems[0].lower() or "case-study" in systems[0].lower()
+
+
 def test_thread_title_from_message_and_file() -> None:
     assert thread_title(kind="message", body="Short brief", file_name=None) == "Short brief"
     long = "x" * 120

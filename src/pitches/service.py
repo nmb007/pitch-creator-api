@@ -394,8 +394,15 @@ def get_page(pitch_id: UUID, user_id: UUID) -> dict:
         }
 
 
-def update_page(*, pitch_id: UUID, user_id: UUID, title: str, body: str) -> dict:
-    """Append a revision with source=edit and a new pitch_pages row."""
+def update_page(
+    *,
+    pitch_id: UUID,
+    user_id: UUID,
+    title: str,
+    body: str,
+    source: str = "edit",
+) -> dict:
+    """Append a revision and a new pitch_pages row."""
     clean_title = title.strip()[:200]
     clean_body = body.strip()
     if not clean_title or not clean_body:
@@ -411,7 +418,7 @@ def update_page(*, pitch_id: UUID, user_id: UUID, title: str, body: str) -> dict
         user_id=user_id,
         title=clean_title,
         body=clean_body,
-        source="edit",
+        source=source,
         bump_updated_at=True,
     )
     return get_page(pitch_id, user_id)
@@ -423,6 +430,7 @@ def remove_page_study(
     user_id: UUID,
     study_id: UUID,
     rewrite: bool = False,
+    source: str = "edit",
 ) -> dict:
     """Deselect a study on the pitch page. Optionally rewrite title/body."""
     with get_sync_session() as session:
@@ -450,9 +458,104 @@ def remove_page_study(
             user_id=user_id,
             title=drafted["title"],
             body=drafted["body"],
-            source="edit",
+            source=source,
             bump_updated_at=False,
         )
+    return get_page(pitch_id, user_id)
+
+
+def add_page_study(
+    *,
+    pitch_id: UUID,
+    user_id: UUID,
+    study_id: UUID,
+    rewrite: bool = False,
+    source: str = "edit",
+) -> dict:
+    """Select a shortlisted study on the pitch page. Optionally rewrite title/body."""
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        if _latest_page(session, pitch_id) is None:
+            raise NotFoundError()
+        match = session.exec(
+            select(PitchMatch)
+            .where(PitchMatch.pitch_id == pitch_id)
+            .where(PitchMatch.study_id == study_id)
+        ).first()
+        if match is None:
+            raise NotFoundError()
+        if match.selected:
+            raise ConflictError()
+        match.selected = True
+        session.add(match)
+        session.commit()
+
+    if rewrite:
+        drafted = draft_page_content(pitch_id)
+        append_page_revision(
+            pitch_id=pitch_id,
+            user_id=user_id,
+            title=drafted["title"],
+            body=drafted["body"],
+            source=source,
+            bump_updated_at=False,
+        )
+    return get_page(pitch_id, user_id)
+
+
+def find_pitch_match_studies(*, pitch_id: UUID, query: str) -> list[dict]:
+    """Match query against titles of all pitch_matches for this pitch (title only)."""
+    needle = query.strip().lower()
+    with get_sync_session() as session:
+        rows = session.exec(
+            select(PitchMatch, Study)
+            .join(Study, Study.id == PitchMatch.study_id)
+            .where(PitchMatch.pitch_id == pitch_id)
+            .order_by(PitchMatch.rank)
+        ).all()
+        results: list[dict] = []
+        for match, study in rows:
+            title = study.title or ""
+            if needle and needle not in title.lower():
+                continue
+            results.append(
+                {
+                    "study_id": str(study.id),
+                    "title": title,
+                    "section": study.section,
+                    "selected": bool(match.selected),
+                }
+            )
+        return results
+
+
+def pitch_owner_id(pitch_id: UUID) -> UUID:
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None:
+            raise NotFoundError()
+        return pitch.created_by
+
+
+def regenerate_page(*, pitch_id: UUID, user_id: UUID, source: str = "chat") -> dict:
+    """Rewrite title/body from current selection and append a revision."""
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        if _latest_page(session, pitch_id) is None:
+            raise NotFoundError()
+    drafted = draft_page_content(pitch_id)
+    append_page_revision(
+        pitch_id=pitch_id,
+        user_id=user_id,
+        title=drafted["title"],
+        body=drafted["body"],
+        source=source,
+        bump_updated_at=True,
+    )
     return get_page(pitch_id, user_id)
 
 

@@ -1,4 +1,4 @@
-"""Conversational pitch graph: policy gate, tools agent, then optional generate."""
+"""Conversational pitch graph: policy gate, search or revise tools, optional generate."""
 
 from __future__ import annotations
 
@@ -25,6 +25,8 @@ from src.models import utcnow
 from src.pitches.generate import write_generated_pitch
 from src.pitches.models import Pitch, PitchMessage
 from src.pitches.policy import decide_gate
+from src.pitches.revise_tools import revise_tool_list
+from src.pitches.service import has_page
 from src.pitches.tools import awaiting_selection, current_pitch_id, pitch_tools
 
 logger = logging.getLogger(__name__)
@@ -48,14 +50,41 @@ Your reply must account for all studies (the full study_count when present).
 Write replies in Markdown only. Do not use HTML tags such as <br>.
 Inside tables, separate points with semicolons or a middle dot ( · ), not line-break tags."""
 
+REVISE_SYSTEM = """You refine an existing Arbisoft pitch page for this chat thread.
+You only use revise tools. Do not search the full study library.
+Prefer surgical tools (update_title, update_body, add_study, remove_study) over regenerate_page
+unless the user asks to start over or regenerate from the current selection.
+Resolve studies with find_pitch_studies before add_study or remove_study. Never invent UUIDs.
+Only add a study if find_pitch_studies shows it in this pitch's matches and selected is false.
+If find returns no match, say it was not in this pitch's suggested list.
+If selected is already true on an add request, say it is already on the pitch.
+If both remove_study or add_study and update_body are needed, change selection first, then update_body.
+Always pass rewrite explicitly as true or false on add_study and remove_study; never omit it.
+If the user asks to add or remove a study and does not mention updating the description,
+always ask first whether to update the description too; do not call add_study or remove_study
+until they answer.
+When your previous message asked whether to update the description and the user affirms
+(yes, please, yeah, yep, sure, update it, do it, go ahead, etc.), call add_study or
+remove_study with rewrite=true.
+When they decline (no, skip, just remove/add, leave the description, etc.), use rewrite=false.
+Do not set rewrite=true just because the same message also asks for a body or style change —
+that is a separate copy ask: use rewrite=false for the selection change, then update_body.
+Stay grounded in selected studies and the prospect brief. Do not invent facts.
+After a successful change, confirm briefly and include the view_url from the tool result.
+Write replies in Markdown only. Do not use HTML tags such as <br>."""
+
 _FALLBACK_GATE_REPLY = (
     "I can help with Arbisoft case studies and pitch shortlists. What should we look for?"
+)
+_FALLBACK_REVISE_GATE_REPLY = (
+    "I can help refine this pitch — title, description, or case studies. What should we change?"
 )
 
 
 class PitchState(TypedDict, total=False):
     pitch_id: str
     gate: Literal["allow_tools", "refuse", "clarify"]
+    has_page: bool
     messages: Annotated[list[BaseMessage], add_messages]
     awaiting_selection: bool
     selected_study_ids: list[str]
@@ -63,19 +92,23 @@ class PitchState(TypedDict, total=False):
 
 
 def compile_graph(checkpointer):  # noqa: ANN001, ANN202
-    tools = pitch_tools()
-    tool_node = ToolNode(tools)
+    search_tools = pitch_tools()
+    revise_tools = revise_tool_list()
+    search_tool_node = ToolNode(search_tools)
+    revise_tool_node = ToolNode(revise_tools)
     builder = StateGraph(PitchState)
     builder.add_node("policy_gate", policy_gate)
-    builder.add_node("agent", make_agent_node(tools))
-    builder.add_node("tools", make_tools_node(tool_node))
+    builder.add_node("agent", make_agent_node(search_tools, AGENT_SYSTEM))
+    builder.add_node("tools", make_search_tools_node(search_tool_node))
+    builder.add_node("revise_agent", make_agent_node(revise_tools, REVISE_SYSTEM))
+    builder.add_node("revise_tools", make_revise_tools_node(revise_tool_node))
     builder.add_node("maybe_wait", maybe_wait)
     builder.add_node("generate", generate)
     builder.add_edge(START, "policy_gate")
     builder.add_conditional_edges(
         "policy_gate",
         route_after_gate,
-        {"agent": "agent", END: END},
+        {"agent": "agent", "revise_agent": "revise_agent", END: END},
     )
     builder.add_conditional_edges(
         "agent",
@@ -88,6 +121,12 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
         {"agent": "agent", "maybe_wait": "maybe_wait"},
     )
     builder.add_conditional_edges(
+        "revise_agent",
+        tools_condition,
+        {"tools": "revise_tools", END: END},
+    )
+    builder.add_edge("revise_tools", "revise_agent")
+    builder.add_conditional_edges(
         "maybe_wait",
         route_after_wait,
         {"generate": "generate", END: END},
@@ -96,11 +135,11 @@ def compile_graph(checkpointer):  # noqa: ANN001, ANN202
     return builder.compile(checkpointer=checkpointer)
 
 
-def make_agent_node(tools: list[Any]):  # noqa: ANN201
+def make_agent_node(tools: list[Any], system_prompt: str):  # noqa: ANN201
     def agent(state: PitchState) -> dict[str, Any]:
         model = chat_model().bind_tools(tools)
         # System prompt is invoke-only so it is not duplicated in checkpointed messages.
-        history = [SystemMessage(content=AGENT_SYSTEM), *(state.get("messages") or [])]
+        history = [SystemMessage(content=system_prompt), *(state.get("messages") or [])]
         reply = model.invoke(history)
         _persist_state_message(UUID(state["pitch_id"]), reply)
         return {"messages": [reply]}
@@ -108,7 +147,7 @@ def make_agent_node(tools: list[Any]):  # noqa: ANN201
     return agent
 
 
-def make_tools_node(tool_node: ToolNode):  # noqa: ANN201
+def make_search_tools_node(tool_node: ToolNode):  # noqa: ANN201
     def run_tools(state: PitchState) -> dict[str, Any]:
         pitch_token = current_pitch_id.set(state["pitch_id"])
         box = {"ready": False}
@@ -129,23 +168,45 @@ def make_tools_node(tool_node: ToolNode):  # noqa: ANN201
     return run_tools
 
 
+def make_revise_tools_node(tool_node: ToolNode):  # noqa: ANN201
+    def run_tools(state: PitchState) -> dict[str, Any]:
+        pitch_token = current_pitch_id.set(state["pitch_id"])
+        try:
+            result = tool_node.invoke(state)
+        finally:
+            current_pitch_id.reset(pitch_token)
+        pitch_id = UUID(state["pitch_id"])
+        for message in result.get("messages") or []:
+            _persist_state_message(pitch_id, message)
+        return {"messages": result.get("messages", [])}
+
+    return run_tools
+
+
 def policy_gate(state: PitchState) -> dict[str, Any]:
+    pitch_id = state["pitch_id"]
+    page_exists = has_page(UUID(pitch_id))
     decision, reply = decide_gate(
-        pitch_id=state["pitch_id"],
+        pitch_id=pitch_id,
         messages=state.get("messages") or [],
+        has_page=page_exists,
     )
     if decision == "allow_tools":
-        return {"gate": decision}
-    body = reply.strip() or _FALLBACK_GATE_REPLY
+        return {"gate": decision, "has_page": page_exists}
+    body = reply.strip() or (
+        _FALLBACK_REVISE_GATE_REPLY if page_exists else _FALLBACK_GATE_REPLY
+    )
     message = AIMessage(content=body)
-    _persist_state_message(UUID(state["pitch_id"]), message)
-    return {"gate": decision, "messages": [message]}
+    _persist_state_message(UUID(pitch_id), message)
+    return {"gate": decision, "has_page": page_exists, "messages": [message]}
 
 
 def route_after_gate(state: PitchState) -> str:
-    if state.get("gate") == "allow_tools":
-        return "agent"
-    return END
+    if state.get("gate") != "allow_tools":
+        return END
+    if state.get("has_page"):
+        return "revise_agent"
+    return "agent"
 
 
 def route_after_tools(state: PitchState) -> str:
