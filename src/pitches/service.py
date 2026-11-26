@@ -21,7 +21,7 @@ from src.exceptions import ConflictError, NotFoundError
 from src.models import utcnow
 from src.pitches.exceptions import EmptyInputError, EmptySelectionError, UnknownSelectionError
 from src.pitches.extract import ALLOWED_EXTENSIONS, extract_text
-from src.pitches.generate import write_generated_pitch
+from src.pitches.generate import append_page_revision, draft_page_content, write_generated_pitch
 from src.pitches.models import Pitch, PitchInput, PitchMatch, PitchMessage, PitchPage, PitchRevision
 
 logger = logging.getLogger(__name__)
@@ -404,23 +404,55 @@ def update_page(*, pitch_id: UUID, user_id: UUID, title: str, body: str) -> dict
         pitch = session.get(Pitch, pitch_id)
         if pitch is None or pitch.created_by != user_id:
             raise NotFoundError()
-        current = _latest_page(session, pitch_id)
-        if current is None:
+        if _latest_page(session, pitch_id) is None:
             raise NotFoundError()
-        revision = PitchRevision(pitch_id=pitch_id, source="edit", created_by=user_id)
-        session.add(revision)
-        session.flush()
-        session.add(
-            PitchPage(
-                revision_id=revision.id,
-                title=clean_title,
-                body=clean_body,
-                prospect_logo_storage_key=current.prospect_logo_storage_key,
-            )
-        )
-        pitch.updated_at = utcnow()
-        session.add(pitch)
+    append_page_revision(
+        pitch_id=pitch_id,
+        user_id=user_id,
+        title=clean_title,
+        body=clean_body,
+        source="edit",
+        bump_updated_at=True,
+    )
+    return get_page(pitch_id, user_id)
+
+
+def remove_page_study(
+    *,
+    pitch_id: UUID,
+    user_id: UUID,
+    study_id: UUID,
+    rewrite: bool = False,
+) -> dict:
+    """Deselect a study on the pitch page. Optionally rewrite title/body."""
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None or pitch.created_by != user_id:
+            raise NotFoundError()
+        if _latest_page(session, pitch_id) is None:
+            raise NotFoundError()
+        match = session.exec(
+            select(PitchMatch)
+            .where(PitchMatch.pitch_id == pitch_id)
+            .where(PitchMatch.study_id == study_id)
+            .where(PitchMatch.selected.is_(True))
+        ).first()
+        if match is None:
+            raise NotFoundError()
+        match.selected = False
+        session.add(match)
         session.commit()
+
+    if rewrite:
+        drafted = draft_page_content(pitch_id)
+        append_page_revision(
+            pitch_id=pitch_id,
+            user_id=user_id,
+            title=drafted["title"],
+            body=drafted["body"],
+            source="edit",
+            bump_updated_at=False,
+        )
     return get_page(pitch_id, user_id)
 
 

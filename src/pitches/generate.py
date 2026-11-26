@@ -83,30 +83,79 @@ def view_url(pitch_id: UUID) -> str:
     return f"{base}/pitch/view?id={pitch_id}"
 
 
-def write_generated_pitch(*, pitch_id: UUID, user_id: UUID) -> dict[str, str]:
-    """Create a revision and page from selected matches. Returns title and view URL."""
+def draft_page_content(pitch_id: UUID) -> dict[str, str]:
+    """Draft title/body from the prospect brief and currently selected studies."""
     brief, studies = _load_brief_and_studies(pitch_id)
     drafted = _draft_pitch(pitch_id=pitch_id, brief=brief, studies=studies)
     title = (drafted.get("title") or "Pitch").strip()[:200] or "Pitch"
     body = (drafted.get("body") or "").strip()
     if not body:
         body = _fallback_body(studies)
+    return {"title": title, "body": body}
+
+
+def append_page_revision(
+    *,
+    pitch_id: UUID,
+    user_id: UUID,
+    title: str,
+    body: str,
+    source: str,
+    bump_updated_at: bool = True,
+    assistant_message: str | None = None,
+) -> None:
+    """Append a pitch_revisions row and a new pitch_pages row."""
+    clean_title = title.strip()[:200] or "Pitch"
+    clean_body = body.strip() or "No case studies were selected for this pitch."
+    with get_sync_session() as session:
+        pitch = session.get(Pitch, pitch_id)
+        if pitch is None:
+            raise RuntimeError(f"Pitch {pitch_id} was missing during page persist")
+        current = session.exec(
+            select(PitchPage)
+            .join(PitchRevision, PitchRevision.id == PitchPage.revision_id)
+            .where(PitchRevision.pitch_id == pitch_id)
+            .order_by(PitchRevision.created_at.desc())
+        ).first()
+        logo_key = current.prospect_logo_storage_key if current is not None else None
+        revision = PitchRevision(pitch_id=pitch_id, source=source, created_by=user_id)
+        session.add(revision)
+        session.flush()
+        session.add(
+            PitchPage(
+                revision_id=revision.id,
+                title=clean_title,
+                body=clean_body,
+                prospect_logo_storage_key=logo_key,
+            )
+        )
+        if assistant_message:
+            session.add(PitchMessage(pitch_id=pitch_id, role="assistant", body=assistant_message))
+        if bump_updated_at:
+            pitch.updated_at = utcnow()
+            session.add(pitch)
+        session.commit()
+
+
+def write_generated_pitch(*, pitch_id: UUID, user_id: UUID) -> dict[str, str]:
+    """Create a revision and page from selected matches. Returns title and view URL."""
+    drafted = draft_page_content(pitch_id)
+    title = drafted["title"]
+    body = drafted["body"]
     url = view_url(pitch_id)
     message = (
         f"Your pitch is ready: [{title}]({url})\n\n"
         "Open the link to review the tailored description and the selected case studies."
     )
-    with get_sync_session() as session:
-        revision = PitchRevision(pitch_id=pitch_id, source="generate", created_by=user_id)
-        session.add(revision)
-        session.flush()
-        session.add(PitchPage(revision_id=revision.id, title=title, body=body))
-        session.add(PitchMessage(pitch_id=pitch_id, role="assistant", body=message))
-        pitch = session.get(Pitch, pitch_id)
-        if pitch is not None:
-            pitch.updated_at = utcnow()
-            session.add(pitch)
-        session.commit()
+    append_page_revision(
+        pitch_id=pitch_id,
+        user_id=user_id,
+        title=title,
+        body=body,
+        source="generate",
+        bump_updated_at=True,
+        assistant_message=message,
+    )
     return {"title": title, "url": url, "message": message}
 
 

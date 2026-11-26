@@ -1,9 +1,10 @@
 """Pitch HTTP routes: create/follow-up as SSE, plus hydrate endpoints."""
 
+from typing import Annotated
 from uuid import UUID
 
 from asyncer import asyncify
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 
 from src.exceptions import ConflictError, NotFoundError
@@ -263,6 +264,36 @@ async def patch_page(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Title and body are required",
         ) from exc
+    except NotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pitch page not found"
+        ) from exc
+    return _page_response(row)
+
+
+@router.delete(
+    "/{pitch_id}/page/studies/{study_id}",
+    summary="Remove a selected study from the pitch page",
+    responses=error_responses(
+        HTTP_404_NOT_FOUND=("Pitch page or study not found", "Pitch page not found"),
+    ),
+)
+async def delete_page_study(
+    pitch_id: UUID,
+    study_id: UUID,
+    user: CurrentUserDep,
+    rewrite: Annotated[
+        bool,
+        Query(description="When true, also rewrite title and body from remaining studies"),
+    ] = False,
+) -> PageResponse:
+    try:
+        row = await asyncify(pitch_service.remove_page_study)(
+            pitch_id=pitch_id,
+            user_id=user.id,
+            study_id=study_id,
+            rewrite=rewrite,
+        )
     except NotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Pitch page not found"

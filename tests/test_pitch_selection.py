@@ -351,6 +351,102 @@ async def test_patch_page_creates_new_revision(client, monkeypatch) -> None:  # 
     assert latest.json()["title"] == "Edited Title"
 
 
+async def test_delete_page_study_deselects_without_rewrite(client, monkeypatch) -> None:  # noqa: ANN001
+    token = await _token(client)
+    user = auth_service.ensure_user(
+        username="select@example.com",
+        password="correct-password",
+        name="Select Person",
+    )
+    pitch_id, study_ids = _seed_pitch_with_matches(user.id, study_count=2)
+    monkeypatch.setattr(
+        generate_mod,
+        "_draft_pitch",
+        lambda **kwargs: {"title": "Original Title", "body": "## Why this matters\n\nOriginal."},
+    )
+    created = await client.put(
+        f"/v1/pitches/{pitch_id}/selection",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"study_ids": [str(study_ids[0]), str(study_ids[1])]},
+    )
+    assert created.status_code == 200
+
+    deleted = await client.delete(
+        f"/v1/pitches/{pitch_id}/page/studies/{study_ids[0]}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["title"] == "Original Title"
+    assert "Original" in body["body"]
+    assert len(body["studies"]) == 1
+    assert body["studies"][0]["study_id"] == str(study_ids[1])
+
+    with pitch_service.get_sync_session() as session:
+        matches = list(
+            session.exec(select(PitchMatch).where(PitchMatch.pitch_id == pitch_id)).all()
+        )
+        by_id = {row.study_id: row.selected for row in matches}
+        assert by_id[study_ids[0]] is False
+        assert by_id[study_ids[1]] is True
+        revisions = list(
+            session.exec(select(PitchRevision).where(PitchRevision.pitch_id == pitch_id)).all()
+        )
+        assert len(revisions) == 1
+
+
+async def test_delete_page_study_rewrite_creates_revision(client, monkeypatch) -> None:  # noqa: ANN001
+    token = await _token(client)
+    user = auth_service.ensure_user(
+        username="select@example.com",
+        password="correct-password",
+        name="Select Person",
+    )
+    pitch_id, study_ids = _seed_pitch_with_matches(user.id, study_count=2)
+    monkeypatch.setattr(
+        generate_mod,
+        "_draft_pitch",
+        lambda **kwargs: {"title": "Original Title", "body": "## Why this matters\n\nOriginal."},
+    )
+    monkeypatch.setattr(
+        pitch_service,
+        "draft_page_content",
+        lambda pitch_id: {
+            "title": "Rewritten Title",
+            "body": "## Why this matters\n\nRewritten after remove.",
+        },
+    )
+    created = await client.put(
+        f"/v1/pitches/{pitch_id}/selection",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"study_ids": [str(study_ids[0]), str(study_ids[1])]},
+    )
+    assert created.status_code == 200
+
+    deleted = await client.delete(
+        f"/v1/pitches/{pitch_id}/page/studies/{study_ids[0]}",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"rewrite": "true"},
+    )
+    assert deleted.status_code == 200
+    body = deleted.json()
+    assert body["title"] == "Rewritten Title"
+    assert "Rewritten after remove" in body["body"]
+    assert len(body["studies"]) == 1
+
+    with pitch_service.get_sync_session() as session:
+        revisions = list(
+            session.exec(
+                select(PitchRevision)
+                .where(PitchRevision.pitch_id == pitch_id)
+                .order_by(PitchRevision.created_at)
+            ).all()
+        )
+        assert len(revisions) == 2
+        assert revisions[0].source == "generate"
+        assert revisions[1].source == "edit"
+
+
 async def test_page_falls_back_to_raw_text_when_sections_empty(
     client,  # noqa: ANN001
     monkeypatch,  # noqa: ANN001
