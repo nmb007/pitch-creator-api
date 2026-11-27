@@ -217,7 +217,9 @@ def write_generated_pitch(*, pitch_id: UUID, user_id: UUID) -> dict[str, str]:
     url = view_url(pitch_id)
     message = (
         f"Your pitch is ready: [{title}]({url})\n\n"
-        "Open the link to review the tailored description and the selected case studies."
+        "Open the link to review the tailored description and the selected case studies. "
+        "On the pitch page you can edit the title and body or remove studies; in this chat "
+        "you can ask to refine the pitch or change which studies are included."
     )
     append_page_revision(
         pitch_id=pitch_id,
