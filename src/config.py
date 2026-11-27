@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     RERANK_MAX_LENGTH: int = 1024
     RERANK_QUERY_CHARS: int = 1500
     # Drop studies whose best chunk score is below this (raw cross-encoder logits).
-    RERANK_MIN_SCORE: float = -5.0
+    RERANK_MIN_SCORE: float = -6.0
     # Structure ingest LLM: groq | openai | local
     STRUCTURE_LLM_PROVIDER: str
     # Empty uses GROQ_MODEL or the local GGUF file. Required when the provider is openai.
