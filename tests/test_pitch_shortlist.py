@@ -87,7 +87,10 @@ def _invoke(graph, pitch_id: str) -> tuple[bool, object]:  # noqa: ANN001
 def test_saved_shortlist_skips_the_assistant_reply(monkeypatch) -> None:  # noqa: ANN001
     model = ScriptedModel(
         "recommend_pitch_studies",
-        {"brief": "A travel company needs a faster mobile app."},
+        {
+            "search_query": "travel mobile app",
+            "brief": "A travel company needs a faster mobile app.",
+        },
     )
     monkeypatch.setattr(
         pitch_tools,
@@ -103,7 +106,10 @@ def test_saved_shortlist_skips_the_assistant_reply(monkeypatch) -> None:  # noqa
 def test_empty_shortlist_still_gets_a_reply(monkeypatch) -> None:  # noqa: ANN001
     model = ScriptedModel(
         "recommend_pitch_studies",
-        {"brief": "A travel company needs a faster mobile app."},
+        {
+            "search_query": "travel mobile app",
+            "brief": "A travel company needs a faster mobile app.",
+        },
     )
     monkeypatch.setattr(pitch_tools, "_persist_matches", lambda pitch_id, query, shortlist: [])
     graph = _compile(monkeypatch, model)
@@ -113,7 +119,7 @@ def test_empty_shortlist_still_gets_a_reply(monkeypatch) -> None:  # noqa: ANN00
 
 
 def test_browse_still_gets_a_reply(monkeypatch) -> None:  # noqa: ANN001
-    model = ScriptedModel("browse_studies", {"query": "React Native mobile"})
+    model = ScriptedModel("browse_studies", {"search_query": "React Native mobile"})
     graph = _compile(monkeypatch, model)
     monkeypatch.setattr(
         pitch_tools,

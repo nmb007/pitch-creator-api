@@ -511,7 +511,10 @@ def test_generate_path_does_not_call_agent_again(monkeypatch) -> None:  # noqa: 
                     tool_calls=[
                         {
                             "name": "recommend_pitch_studies",
-                            "args": {"brief": "travel mobile app"},
+                            "args": {
+                                "search_query": "travel mobile app",
+                                "brief": "A travel company needs a faster mobile app.",
+                            },
                             "id": "c1",
                             "type": "tool_call",
                         }

@@ -61,18 +61,42 @@ _CHUNK_SELECT = """
 """
 
 
-@tool
-def browse_studies(query: str) -> str:
-    """Find Arbisoft case studies matching a topic or capability (not a full prospect pitch).
+_SEARCH_QUERY_RULES = """
+search_query (required): 2 to 8 words. Only domain, technology, industry, product, or
+region the user actually said. Copy those words. Do not add synonyms. Do not add pitch
+language. Drop filler such as preparing, pitch, company, seeking, solutions, case study,
+case studies, references, for a pitch. If the user already named a short topic, copy it.
+Never put the full sentence or a full RFP into search_query.
+Examples:
+- "We are preparing a pitch for a company with fintech/digital payments"
+  → search_query: "fintech digital payments"
+- "RFP for a React Native payments app in MENA"
+  → search_query: "React Native payments MENA"
+- "Find case studies on fintech or digital payments"
+  → search_query: "fintech digital payments"
+"""
 
-    Set query to a compact search phrase: the main topic or capability, plus any real
-    filters (industry, region, product type etc...). Drop fillers. Keep secondary
-    constraints; do not reduce a multi-part ask to a single buzzword when other
-    filters matter.
+_BROWSE_DESCRIPTION = f"""Find Arbisoft case studies matching a topic or capability (not a full prospect pitch).
 
-    Results include winning passage chunks. Base every claim on those chunks.
-    """
-    cleaned = query.strip()
+{_SEARCH_QUERY_RULES.strip()}
+
+Results include winning passage chunks. Base every claim on those chunks."""
+
+_RECOMMEND_DESCRIPTION = f"""Recommend the best case studies for a prospect brief or RFP-style pitch request.
+
+{_SEARCH_QUERY_RULES.strip()}
+
+brief (required): the user's message unchanged, including any real constraints.
+Do not shorten brief. Do not use brief as the search string. Retrieval uses
+search_query only; brief is for explaining why each study fits.
+
+Results include winning passage chunks. Base every claim on those chunks."""
+
+
+@tool(description=_BROWSE_DESCRIPTION)
+def browse_studies(search_query: str) -> str:
+    """Find Arbisoft case studies matching a topic or capability."""
+    cleaned = search_query.strip()
     if len(cleaned) < MIN_QUERY_CHARS:
         return json.dumps({"ok": False, "error": "Query too short", "studies": []})
     shortlist = _retrieve(cleaned)
@@ -81,21 +105,18 @@ def browse_studies(query: str) -> str:
     return json.dumps({"ok": True, "mode": "browse", "study_count": len(rows), "studies": rows})
 
 
-@tool
-def recommend_pitch_studies(brief: str) -> str:
-    """Recommend the best case studies for a prospect brief or RFP-style pitch request.
-
-    Pass a fuller brief in brief: prospect need, domain, and constraints etc... from the user
-    message. Do not collapse an RFP-style ask into a single keyword.
-
-    Results include winning passage chunks. Base every claim on those chunks.
-    """
-    cleaned = brief.strip()
-    if len(cleaned) < MIN_QUERY_CHARS:
+@tool(description=_RECOMMEND_DESCRIPTION)
+def recommend_pitch_studies(search_query: str, brief: str) -> str:
+    """Recommend the best case studies for a prospect brief or RFP-style pitch request."""
+    cleaned_query = search_query.strip()
+    cleaned_brief = brief.strip()
+    if len(cleaned_query) < MIN_QUERY_CHARS:
+        return json.dumps({"ok": False, "error": "Query too short", "studies": []})
+    if len(cleaned_brief) < MIN_QUERY_CHARS:
         return json.dumps({"ok": False, "error": "Brief too short", "studies": []})
-    shortlist = _retrieve(cleaned)
+    shortlist = _retrieve(cleaned_query)
     pitch_id = UUID(current_pitch_id.get())
-    rows = _persist_matches(pitch_id, cleaned, shortlist)
+    rows = _persist_matches(pitch_id, cleaned_brief, shortlist)
     # An empty shortlist still needs an assistant reply. Only a saved list waits.
     _mark_awaiting_selection(bool(rows))
     return json.dumps({"ok": True, "mode": "pitch", "study_count": len(rows), "studies": rows})
