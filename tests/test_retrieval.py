@@ -7,6 +7,7 @@ from src.pitches.retrieval import (
     chunk_part_name,
     escape_like,
     group_studies_by_best_chunk,
+    keyword_or_tsquery_sql,
     rrf_merge,
 )
 
@@ -101,6 +102,15 @@ def test_chunk_part_name_matches_field_or_body() -> None:
 
 def test_escape_like() -> None:
     assert escape_like("100%_done") == "100\\%\\_done"
+
+
+def test_keyword_or_tsquery_uses_or() -> None:
+    sql = keyword_or_tsquery_sql()
+    assert "plainto_tsquery('english', :q)" in sql
+    assert "replace(" in sql
+    assert "' & '" in sql
+    assert "' | '" in sql
+    assert sql.endswith("::tsquery")
 
 
 def _chunk(

@@ -90,6 +90,13 @@ def group_studies_by_best_chunk(
     return selected
 
 
+def keyword_or_tsquery_sql(param: str = "q") -> str:
+    """OR the lexemes of a natural-language query. plainto_tsquery ANDs them."""
+    return (
+        f"replace(plainto_tsquery('english', :{param})::text, ' & ', ' | ')::tsquery"
+    )
+
+
 def escape_like(value: str) -> str:
     """Escape % and _ for ILIKE patterns."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

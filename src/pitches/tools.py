@@ -23,6 +23,7 @@ from src.pitches.retrieval import (
     chunk_part_name,
     escape_like,
     group_studies_by_best_chunk,
+    keyword_or_tsquery_sql,
     rrf_merge,
 )
 from src.rerank import rerank_texts
@@ -123,11 +124,12 @@ def _retrieve(query: str) -> list[dict[str, Any]]:
             ),
             {"embedding": literal, "limit": settings.RETRIEVAL_VECTOR_K},
         ).all()
+        or_tsquery = keyword_or_tsquery_sql()
         keyword_rows = session.execute(
             text(
                 f"""
                 SELECT {_CHUNK_SELECT},
-                       ts_rank_cd(sc.text_search, plainto_tsquery('english', :q)) AS rank,
+                       ts_rank_cd(sc.text_search, {or_tsquery}) AS rank,
                        CASE
                          WHEN sc.text ILIKE '%' || :phrase || '%' ESCAPE '\\' THEN 1
                          ELSE 0
@@ -136,7 +138,7 @@ def _retrieve(query: str) -> list[dict[str, Any]]:
                 JOIN study_versions AS sv
                   ON sv.id = sc.study_version_id AND sv.is_current
                 JOIN studies AS s ON s.id = sv.study_id AND s.status = 'active'
-                WHERE sc.text_search @@ plainto_tsquery('english', :q)
+                WHERE sc.text_search @@ {or_tsquery}
                 ORDER BY phrase_hit DESC, rank DESC
                 LIMIT :limit
                 """
