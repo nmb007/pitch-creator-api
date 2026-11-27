@@ -1,6 +1,51 @@
 """Pitch create and follow-up return SSE turns."""
 
+from uuid import uuid4
+
+from langchain_core.messages import AIMessageChunk
+
 from src.auth import service as auth_service
+from src.pitches import service as pitch_service
+
+
+def _stream_event(node: str, text: str) -> dict:
+    return {
+        "event": "on_chat_model_stream",
+        "name": "ChatOpenAI",
+        "metadata": {"langgraph_node": node},
+        "data": {"chunk": AIMessageChunk(content=text)},
+    }
+
+
+def test_sse_chat_deltas_only_from_agent_nodes() -> None:
+    pitch_id = uuid4()
+    allowed = list(
+        pitch_service._sse_from_graph_event(
+            _stream_event("revise_agent", "Study added."),
+            pitch_id=pitch_id,
+        )
+    )
+    assert len(allowed) == 1
+    assert "assistant.delta" in allowed[0]
+    assert "Study added." in allowed[0]
+
+    search_agent = list(
+        pitch_service._sse_from_graph_event(
+            _stream_event("agent", "Here are studies."),
+            pitch_id=pitch_id,
+        )
+    )
+    assert len(search_agent) == 1
+    assert "assistant.delta" in search_agent[0]
+
+    for node in ("revise_tools", "tools", "policy_gate", ""):
+        leaked = list(
+            pitch_service._sse_from_graph_event(
+                _stream_event(node, '{"title":"Leak","hook":"x"}'),
+                pitch_id=pitch_id,
+            )
+        )
+        assert leaked == [], node
 
 
 async def _token(client) -> str:  # noqa: ANN001

@@ -730,13 +730,18 @@ def _langgraph_node(event: dict) -> str:
     return name if isinstance(name, str) else ""
 
 
+# Only these nodes may stream into the chat pending bubble. Nested LLMs inside
+# tools (rewrite/draft) report tools/revise_tools and must not leak as deltas.
+_CHAT_STREAM_NODES = frozenset({"agent", "revise_agent"})
+
+
 def _sse_from_graph_event(event: dict, *, pitch_id: UUID):
-    """Map LangGraph astream_events → SSE. Skip policy_gate model streams."""
+    """Map LangGraph astream_events → SSE. Chat deltas only from agent nodes."""
     kind = event.get("event")
     node = _langgraph_node(event)
 
     if kind == "on_chat_model_stream":
-        if node == "policy_gate":
+        if node not in _CHAT_STREAM_NODES:
             return
         chunk = event.get("data", {}).get("chunk")
         text = _chunk_text(chunk)
@@ -752,7 +757,8 @@ def _sse_from_graph_event(event: dict, *, pitch_id: UUID):
         return
 
     if kind == "on_chat_model_end":
-        if node == "policy_gate":
+        # Tool calls belong to the bound agent nodes, not nested draft LLMs.
+        if node not in _CHAT_STREAM_NODES:
             return
         output = event.get("data", {}).get("output")
         for call in _tool_calls_from_model_output(output):
